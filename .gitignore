@@ -1,0 +1,8 @@
+node_modules/
+.agents/.forge-claims/
+*.log
+.DS_Store
+done.md
+plan.md
+todo.md
+tortuous.md

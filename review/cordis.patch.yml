@@ -1,0 +1,99 @@
+# Project Forge · Review Mode (干净审查模式) — the read-mostly member of the forge family.
+#
+# What it is: a lightweight preset for code review, simple tasks, and clean-room looks at a
+# project. It is meant to be entered two ways:
+#   1. As a standalone review session (pick it in the mode picker), or
+#   2. As the `subagent` / `subagent_fork` child of a project-forge session — the child's
+#      tools come from THIS preset, while the project protocol, digest and controlled
+#      vocabulary are inherited from the parent preset via fork.
+#
+# Why no project-forge plugin row here: a forked child already joins its parent's preset
+# (agent-preset-registry `composeFrom`), and joining twice throws (`already joined`). So this
+# preset declares only the tool set and an audit persona; the mode's plugin arrives via fork.
+
+- insert:
+    - id: preset-project-forge-review
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: project-forge-review
+        name: 项目锻造 · 干净审查
+        description: 锻造家族的只读审查模式。fork 子代理、代码评审、简单任务：不携带父会话完整上下文，适合在干净环境里审代码、查问题、做小改动。项目协议与词表由 fork 继承。
+        order: 3
+        plugins:
+          # ── Audit persona (replaces the steward persona for review work) ──────────
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are a reviewer in the Project Forge family, working read-mostly. You read
+                code to find problems, you verify claims against the actual files, and you keep
+                the project's controlled vocabulary (it is inherited). You do not take over the
+                project: you report findings, you do not rewrite architecture.
+              suffix: Your working directory is {{cwd}}.
+
+          # ── Shell, filesystem, search, jobs ────────────────────────────────────────
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-str-replace-editor
+            name: '@deepseek-ai/dsh-tool-str-replace-editor'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+
+          # ── Review ships its own grilling skill (same one the steward mode uses) ────
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-project-forge-review/package.json')), 'skills')
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── Web lookup for verifying claims ─────────────────────────────────────────
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          # ── Delegation: review fans out read-mostly subagents ───────────────────────
+          # `spawn` here — a review child is meant to be a clean room, not a context copy.
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+          - id: tool-subagent-list-agents
+            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+          - id: tool-subagent
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent
+              modelSelectionSettings: true
+              backgroundMode: continuable
+          - id: tool-subagent-fork
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: fork
+              toolName: subagent_fork
+              backgroundMode: continuable
+
+          # ── Remaining review-facing tools ───────────────────────────────────────────
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true

@@ -1,0 +1,6 @@
+{
+  "project-forge-review": {
+    "title": "项目锻造 · 干净审查模式 Project Forge Review",
+    "description": "锻造家族的只读审查模式。fork 子代理、代码评审、简单任务：不携带父会话上下文，适合在干净环境里审代码、查问题、做小改动。项目协议与词表由 fork 继承。"
+  }
+}

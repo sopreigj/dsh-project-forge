@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Project Forge mode",
+    "description": "Keeps a recoverable, traceable, continuable project state: local-only git, four living state documents (done/todo/tortuous/plan), a layered module hierarchy, compaction recovery, and state-consistency checks."
+  }
+}

@@ -1,0 +1,204 @@
+# Project Forge Mode — the installable bundle patch.
+#
+# One `@deepseek-ai/dsh-agent-preset` declaration is inserted after the web patch. The
+# roster in the New-Session agent-preset control then offers "项目锻造模式 / Project
+# Steward" beside the shipped standard, ptc, minimal and cordis presets.
+#
+# Composition (verified against the shipped presets by top-level row id):
+#   - all 19 top-level rows of the shipped `standard` preset, including the whole
+#     `compaction` group (`compaction-basic`, `command-compact`,
+#     `tool-result-pruner`) with `isolate: { compaction, toolResultPruner }`. Context
+#     compaction is therefore available exactly as in `standard` — unlike the shipped
+#     `minimal` preset, which contains no compaction row at all.
+#   - plus `project-forge` (the protocol plugin) and `tool-str-replace-editor`.
+#   - without `tool-ralph`, `tool-subagent-codex`, `tool-subagent-claude-code` and
+#     `tool-presentation`; the first three are `disabled: true` in `standard`.
+#
+# Maintenance note: when a shipped preset gains a row this mode should also have, add it
+# here too. Rows are self-contained; nothing is inherited from `standard`.
+
+- insert:
+    - id: preset-project-forge
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: project-forge
+        name: 项目锻造模式
+        description: 让 Agent 接管并维护项目状态：本地 git、四份状态文档（done/todo/tortuous/plan）、层级模块架构、压缩恢复与状态一致性检查。
+        order: 2
+        plugins:
+          # ── Identity ────────────────────────────────────────────────────────
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are the steward of this repository, working on a real code project.
+                You keep a local git history, you maintain the project's state documents, and you answer with verified evidence rather than claims.
+              suffix: Your working directory is {{cwd}}.
+
+          # ── The mode itself: protocol, digest, recovery, guards ─────────────
+          - id: project-forge
+            name: 'dsh-project-forge'
+            config:
+              protocol: true
+              recoveryProcedure: true
+              digest: true
+              # Per-document tail budget. Each document is inlined from its END, because
+              # the maintained documents read newest-last: an overgrown document drops
+              # its own head, never its current state.
+              digestTailLimits:
+                plan.md: 20000
+                todo.md: 10000
+                done.md: 20000
+              repoStateInDigest: true
+              stewardFile: true
+              stewardFilePath: .agents/steward.md
+              injectOnCompaction: true
+              # Bound the recovery message to the first step of a turn, so several
+              # surface replacements inside one turn cannot stack messages.
+              recoveryMinTurnStep: 1
+              guardLocalGit: true
+              guardCommitCheckpoint: true
+              guardLayoutCheckpoint: true
+              guardSecrets: true
+              guardConcurrentWrite: true
+
+          # ── Project instructions / AGENTS.md ───────────────────────────────
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          # ── Shell, filesystem, search, jobs ────────────────────────────────
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-str-replace-editor
+            name: '@deepseek-ai/dsh-tool-str-replace-editor'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+
+          # ── Skills ─────────────────────────────────────────────────────────
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              # Ship the mode's own grilling skill. The directory resolves from this
+              # bundle's own package, so it works in Desktop and in a source checkout
+              # alike; `baseUrl` is the patch file's own location.
+              customSkillDirs:
+                - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-project-forge/package.json')), 'skills')
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── Goals ──────────────────────────────────────────────────────────
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+
+          # ── Plan mode (isolated so exit_plan_mode is per-agent) ────────────
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+          # ── Compaction (the mode must survive context loss) ────────────────
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+
+          # ── Delegation ─────────────────────────────────────────────────────
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  # Two child modes, two tools (§12.8):
+                  #   `subagent`      → spawn: a CLEAN room. No inherited context, no preset —
+                  #                      for simple tasks, code review, read-only recon that must
+                  #                      not carry the parent's conversation.
+                  #   `subagent_fork` → fork: inherits the parent's preset AND context (protocol,
+                      #                      digest, vocabulary) — for complex collaboration.
+                  provider: spawn
+                  toolName: subagent
+                  modelSelectionSettings: true
+                  backgroundMode: continuable
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+                  backgroundMode: continuable
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+
+          # ── Remaining agent-facing tools ───────────────────────────────────
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          # Self-modification is not part of project work; enableable per session from
+          # Settings → Plugins when the user asks for it.
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true

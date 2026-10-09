@@ -1,0 +1,12 @@
+{
+  "name": "dsh-project-forge-review",
+  "version": "1.0.0",
+  "description": "Project Forge Review — the read-mostly review mode of the Project Forge family: code review, simple tasks, clean-room subagents. Inherits the project protocol via fork.",
+  "type": "module",
+  "main": "./plugin/index.js",
+  "exports": { "./package.json": "./package.json", "./skills/*": "./skills/*" },
+  "files": ["cordis.patch.yml", "plugin", "skills", "locale", "icon.svg", "README.md", "LICENSE"],
+  "keywords": ["dsh-plugin", "deepseek-harness", "agent-preset", "code-review"],
+  "license": "MIT",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

@@ -1,0 +1,6 @@
+{
+  "project-forge-review": {
+    "title": "Project Forge Review Mode",
+    "description": "The read-mostly review mode of the forge family. Fork a subagent for code review, simple tasks, or a clean-room look at a project: it does not carry the parent's conversation context, so it suits audits and small fixes. The project protocol and vocabulary are inherited via fork."
+  }
+}

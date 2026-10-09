@@ -441,6 +441,60 @@ const PROJECT_MARKERS = {
   }
   console.log('local-git guard: OK');
 
+  // ── Guard A: one-shot push grants — consume on use, never standing permission ──
+  {
+    const { readFileSync: rfs2 } = await import('node:fs');
+    const repo = mkdtempSync(join(tmpdir(), 'forge-grant-'));
+    writeFileSync(join(repo, 'app.py'), 'print(1)\n');
+    mkdirSync(join(repo, '.agents'), { recursive: true });
+    initRepo(repo);
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/sopreigj/nhentai-downloader.git'], { cwd: repo, stdio: 'pipe' });
+
+    const { ctx: gCtx, record: gRecord } = makeCtx();
+    plugin.apply(gCtx, standard.validate({ injectOnCompaction: false }).value);
+    const { agent: gAgent } = createdAgent(gRecord, repo, `session-grant-${Date.now().toString(36)}`);
+    const pushGuard = gRecord.guards.find(
+      (guard) => typeof guard(shell('git push origin main', gAgent)) === 'string',
+    );
+    assert.ok(pushGuard, 'the push guard is registered');
+
+    // No grant: refused, and the refusal teaches the one-shot grant syntax.
+    const noGrant = pushGuard(shell('git push origin main', gAgent));
+    assert.ok(String(noGrant).includes('local-only') && String(noGrant).includes('push allowed:'), 'refused without a grant, with grant syntax in the refusal');
+
+    // Write a ×1 grant: one push passes, the grant line is consumed, the next push is refused.
+    writeFileSync(join(repo, '.agents', 'steward.md'), '# rules\n\npush allowed: github.com/sopreigj/nhentai-downloader ×1\n');
+    assert.equal(pushGuard(shell('git push origin main', gAgent)), undefined, 'first push consumes the ×1 grant');
+    const stewardAfter1 = rfs2(join(repo, '.agents', 'steward.md'), 'utf8');
+    assert.ok(!stewardAfter1.includes('push allowed'), 'the ×1 grant line is gone after use');
+    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('local-only'), 'second push refused — the grant was one-shot');
+
+    // ×2 grant: counts down, then runs out.
+    writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/* ×2\n');
+    assert.equal(pushGuard(shell('git push origin main', gAgent)), undefined, 'first of ×2');
+    assert.ok(rfs2(join(repo, '.agents', 'steward.md'), 'utf8').includes('×1'), 'counted down to ×1');
+    assert.equal(pushGuard(shell('git push origin main', gAgent)), undefined, 'second of ×2');
+    assert.ok(!rfs2(join(repo, '.agents', 'steward.md'), 'utf8').includes('push allowed'), '×2 exhausted, line removed');
+    assert.equal(typeof pushGuard(shell('git push origin main', gAgent)), 'string', 'third push refused');
+
+    // A grant for a different remote does not cover this one.
+    writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/someone-else/*\n');
+    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('local-only'), 'mismatched grant refused');
+
+    // An explicit-URL push matches the URL form directly.
+    writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/* ×1\n');
+    assert.equal(pushGuard(shell('git push https://github.com/sopreigj/nhentai-downloader.git main', gAgent)), undefined, 'explicit-URL push covered by glob grant');
+
+    // Force pushes are never covered by a grant, even with grants in stock.
+    writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: *\n');
+    assert.ok(String(pushGuard(shell('git push -f origin main', gAgent))).includes('force'), 'force push refused despite wildcard grant');
+    assert.ok(String(pushGuard(shell('git push --force-with-lease origin main', gAgent))).includes('force'), 'force-with-lease refused');
+    assert.ok(String(pushGuard(shell('git remote add upstream https://github.com/x/y.git', gAgent))).includes('local-only'), 'remote add never covered');
+
+    rmSync(repo, { recursive: true, force: true });
+    console.log('one-shot push grants: OK');
+  }
+
   // ── All five guards are switchable ───────────────────────────────────────────
   const { ctx: offCtx, record: offRecord } = makeCtx();
   plugin.apply(offCtx, standard.validate({

@@ -168,7 +168,7 @@ function writeClaim(cwd, rel, claim) {
 }
 
 /**
- * Whether a claim is still owned by a live session. A claim whose lock file has not been
+ * Whether one claim is still owned by a live session. A claim whose lock file has not been
  * touched within the staleness window is treated as abandoned (the owner crashed or hung)
  * and may be taken over. This mirrors KimiSwarm's `filelock`-based claim: the lock itself is
  * the liveness signal, so there is no cross-platform PID check to get wrong.
@@ -179,6 +179,84 @@ function claimFresh(claim) {
   const t = claim?.time;
   if (typeof t !== 'number' || t <= 0) return false;
   return Date.now() - t < CLAIM_STALE_MS;
+}
+
+/**
+ * One-shot publish grant. The shape, stored in the repository's `.agents/steward.md`:
+ *   push allowed: github.com/sopreigj/nhentai-downloader ×1
+ *   push allowed: github.com/sopreigj/*                       (no ×N means ×1)
+ * A guarded `git push` that matches the target remote consumes exactly one grant: ×1 lines
+ * are deleted, ×N lines count down. One user consent can therefore never become a standing
+ * permission — the repository returns to local-only the moment the grants run out.
+ * @param cwd - the repository root holding `.agents/steward.md`.
+ * @param command - the raw shell command line containing `git push`.
+ * @returns true when a matching grant existed and was consumed; false when a grant file
+ * exists but no line matched; undefined when there is no grant file at all.
+ */
+function checkPushGrant(cwd, command) {
+  const stewardPath = join(cwd, '.agents', 'steward.md');
+  let text;
+  try {
+    text = readFileSync(stewardPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const url = pushTargetUrl(cwd, command);
+  if (url === undefined) return false;
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const match = GRANT_LINE.exec(lines[index]);
+    if (match === null) continue;
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    if (!grantMatches(match[1], url)) continue;
+    if (count <= 1) lines.splice(index, 1);
+    else lines[index] = lines[index].replace(/×\d+/, `×${count - 1}`);
+    try {
+      writeFileSync(stewardPath, lines.join('\n'));
+    } catch {
+      /* a grant we could not persist still allowed exactly this push — acceptable */
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Matches one `push allowed:` line; group 1 = glob, group 2 = optional ×N count. */
+const GRANT_LINE = /^\s*push\s+allowed:\s*(\S+?)(?:\s+×(\d+))?\s*$/im;
+
+/**
+ * Whether a grant glob covers one remote URL. The grant names a path fragment (e.g.
+ * `github.com/sopreigj/nhentai-downloader`), not a full URL — any URL that CONTAINS the
+ * fragment is covered, so `https://.../nhentai-downloader.git` and `git@github.com:...` both
+ * match. `*` crosses any run of characters. Case-insensitive, because hosts are.
+ */
+function grantMatches(glob, url) {
+  if (glob === '*') return true;
+  const regex = new RegExp(
+    glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*'),
+    'i',
+  );
+  return regex.test(url);
+}
+
+/**
+ * Resolve the remote URL one `git push` command would push to: an explicit URL in the
+ * command is used as-is; a bare name resolves through `git remote get-url` (default
+ * `origin`). `undefined` when it cannot be resolved.
+ */
+function pushTargetUrl(cwd, command) {
+  const tokens = stripQuoted(command).split(/\s+/);
+  const at = tokens.findIndex((token) => token === 'push');
+  let target = '';
+  for (let index = at + 1; index < tokens.length; index++) {
+    if (tokens[index].startsWith('-')) continue;
+    target = tokens[index];
+    break;
+  }
+  if (target === '') target = 'origin';
+  if (/^(https?:\/\/|git@|ssh:\/\/)/.test(target)) return target;
+  const url = runGitOrNothing(cwd, ['remote', 'get-url', target]);
+  return url === undefined ? undefined : url.trim();
 }
 
 /** A claim older than this is assumed abandoned and may be taken over (30 minutes). */
@@ -301,7 +379,7 @@ The four documents are **state**, not notes. Update a document in the same commi
 ## 1. Local git is the safety net (highest priority)
 
 1.1. Initialize the repository as a **local** git repository: \`git init\` at the project root (never at a parent directory).
-1.2. **Never** add a remote, push, or publish — no \`git remote add\`, no \`git push\`, no hosted repository, no package publication — until the user explicitly asks for it in a later message. A guard enforces this; do not try to work around it.
+1.2. **Never** add a remote, push, or publish until the user explicitly authorizes it — and authorization is a **consumable grant, never a standing permission**. The user authorizes exactly one push sequence by adding ONE line to this repository's \`.agents/steward.md\`: \`push allowed: <remote-url-or-glob> [×N]\`. Every guarded \`git push\` **consumes one grant** — an \`×1\` line is deleted on use, an \`×N\` line counts down — and the repository returns to local-only the instant the grants run out. One consent can never become "push forever". You may draft the line, but write it only when the user explicitly said to publish **in this conversation**, and record that instruction in \`plan.md\` Corrections — a grant you invented yourself is a **defect**. \`git remote add\`, history rewriting (\`reset --hard\`, \`clean -f\`, \`branch -D\`), and **forced pushes are never covered by any grant**; only the plain \`git push\` of work the user told you to publish.
 1.3. Never destroy local work: no \`git reset --hard\`, no \`git clean -f\`, no \`git branch -D\` unless the user asked for exactly that.
 1.4. Maintain \`.gitignore\` as the project grows: every build output, dependency directory, cache, log, editor artifact, environment file, large binary and test intermediate file, as soon as it appears.
 1.5. Maintain \`README.md\` (see §3).
@@ -1026,13 +1104,41 @@ export function apply(ctx, config) {
   // A guard is monotonic — no listener ordering can turn a denial back into permission —
   // and it runs before the shell body, which is the only point at which a refused
   // command is guaranteed not to have executed.
+  //
+  // Publishing is local-only by default, and authorization is a CONSUMABLE grant, never a
+  // standing permission (§1.2): the user writes `push allowed: <remote-glob> [×N]` into the
+  // repository's `.agents/steward.md`; each guarded `git push` consumes one grant — ×1
+  // deletes the line, ×N counts down — and the repository returns to local-only the moment
+  // the grants run out. One user consent cannot silently become "push forever".
   if (config.guardLocalGit !== false && ctx.tools !== undefined) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
           if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          const escape = localGitEscape(execution.arguments?.command);
+          const command = execution.arguments?.command;
+          const escape = localGitEscape(command);
           if (escape === undefined) return undefined;
+          // A forced push rewrites published history: grants never cover it.
+          if (escape.label === 'git push' && /\bgit\s+push\b[^|&]*(\s-f\b|--force\b|--force-with-lease)/.test(stripQuoted(command))) {
+            return [
+              'Project Forge Mode refuses this `git push`: force pushes rewrite published history,',
+              'which no one-shot grant covers. If you must, the user disables `guardLocalGit` explicitly.',
+            ].join(' ');
+          }
+          // `git push` consumes a one-shot grant from the repository\'s own steward rules.
+          if (escape.label === 'git push') {
+            const cwd = execution.agent?.session?.header?.cwd;
+            const granted = typeof cwd === 'string' && checkPushGrant(cwd, command) === true;
+            if (granted) return undefined; // grant consumed — this push, and only this push, proceeds
+            return [
+              'Project Forge Mode refuses `git push`: this repository is local-only, and no one-shot',
+              'grant covers this push. To authorize exactly one push sequence, add ONE line to',
+              '`.agents/steward.md` (only because the user explicitly asked to publish):',
+              '`push allowed: <remote-url-or-glob> [×N]` — each guarded push consumes one grant',
+              'and the repository returns to local-only when they run out. History-rewriting',
+              'operations are never covered by a grant.',
+            ].join(' ');
+          }
           return [
             `Project Forge Mode refuses \`${escape.label}\`: this repository is local-only.`,
             'The user has not authorized publishing or history rewriting.',

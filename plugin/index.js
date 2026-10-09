@@ -414,17 +414,18 @@ close one logical unit of work
 
 ## 4. The four state documents — format is part of the protocol
 
-Each document is inlined into your runtime context under its own size budget, and **only the end of the document is inlined** — the tail, not the head — because these documents read newest-last and the current state must be at the end. The consequence matters: an overgrown document silently pushes its own current state out of your context, and the part that gets dropped is the beginning. So keeping the documents concise is part of the job, not a style preference.
+Each document is inlined into your runtime context under its own size budget, and **only the end of the document is inlined** — the tail, not the head — because these documents read newest-last and the current state must be at the end. **The budget is a fence, not a quota.** Crossing it changes nothing about what you must do: the omitted head stays safe in the file on disk, and you can \`read\` it any time the current task genuinely needs it. Do **not** spend steps shrinking a document merely because it crossed the fence — the fence exists precisely so that old content costs you nothing.
 
 | Document | Tail budget inlined | What that means for you |
 |---|---|---|
-| \`plan.md\` | ~20,000 chars (≈400 lines) | Strategy, not an archive. Keep it concise and current. |
-| \`todo.md\` | ~10,000 chars | A short queue. Anything longer is stale items or misplaced detail. |
-| \`done.md\` | ~20,000 chars | Revise sections in place; never grow it by appending. |
+| \`plan.md\` | ~20,000 chars (≈400 lines) | Current strategy stays fully visible; whatever the fence cuts is history, which \`git log\` already keeps. |
+| \`todo.md\` | ~10,000 chars | The open queue normally fits whole; the fence rarely matters at all. |
+| \`done.md\` | ~20,000 chars | Current state and shortest path stay visible; whatever the fence cuts still lives in the file — \`read\` it when you need it. |
 
-- **\`plan.md\` must stay concise and be updated as the project moves.** When it grows, **replace** the superseded parts instead of stacking new ones: revise phases in place, mark them done, and keep the corrections log to one line per correction. Superseded history belongs in \`git log\` and in the shortest-path section of \`done.md\`.
-- **\`todo.md\` must stay short and current.** Remove an item in the commit that completes it. If the file keeps growing, the cause is stale items or detail that belongs in \`plan.md\` or in the code — fix the cause, do not grow the file.
-- **\`done.md\` must stay bounded.** Its sections describe the current state, so each pass **rewrites** the affected section rather than appending a diary entry.
+- **\`plan.md\` grows by revision, not stacking.** When a section is superseded, revise it in place: update phases in place, mark them done, and keep the corrections log to one line per correction. There is no length target — the fence cuts history, and superseded history belongs in \`git log\` and in the shortest-path section of \`done.md\`.
+- **\`todo.md\` holds the open work.** Remove an item in the commit that completes it — it moves to \`done.md\` (§4.2.2). There is no length target; if items pile up, the fix is finishing them, not shrinking the text.
+- **\`done.md\` describes the current state, so each pass rewrites the affected section rather than appending a diary entry.** There is no length target: **never spend steps shrinking it.** Whatever the fence cuts stays in the file, readable on demand.
+- **Never compress a document to fit its budget.** The only reason to open the file's old content is that the current task needs it — then \`read\` it. The budget is a fence, not a quota; touching it is not an event.
 - If a document genuinely needs more room, put the depth in \`docs/\` and leave a link.
 
 ### 4.1 \`done.md\` — the current state and the shortest reproducible path
@@ -458,7 +459,7 @@ Each document is inlined into your runtime context under its own size budget, an
 ### 4.2 \`todo.md\` — the execution queue
 
 4.2.1. Only what still remains, in priority order, each item concrete enough to start.
-4.2.2. Remove an item in the **same commit** that completes it; the record of it belongs in \`done.md\`. Add newly discovered work immediately.
+4.2.2. Move an item into \`done.md\` in the **same commit** that completes it — its record there says what was done and how it was verified. The item leaves \`todo.md\` because it is done, not because the queue needs shrinking. Add newly discovered work immediately.
 4.2.3. No strategy here, no history here. If an item needs a paragraph of justification, the justification belongs in \`plan.md\` and the item links to that section.
 4.2.4. Keep it short enough to read at a glance. A long \`todo.md\` means stale items were left in, or detail leaked in from \`plan.md\` — clean it up rather than adding to it.
 
@@ -467,7 +468,7 @@ Each document is inlined into your runtime context under its own size budget, an
 4.3.1. Record: the goal and success criteria, the phases of the approach, the decisions with their rationale and the alternatives rejected, and the risks.
 4.3.2. Whenever the user corrects the direction, record the correction — what they said, what changed, why — in a dedicated **corrections** section before acting on it. A correction is only recorded when it is in this file.
 4.3.3. When a discussion skill (for example \`project-forge-grilling\`) settles a direction with the user, the agreed outcome goes here.
-4.3.4. \`plan.md\` must not become a task list. Strategy here, queue in \`todo.md\`. If the two ever contain the same items, delete them here.
+4.3.4. \`plan.md\` must not become a task list. Strategy here, queue in \`todo.md\`. When a planned step becomes actionable now, move it down to \`todo.md\` and keep only the strategy in \`plan.md\`; if the two ever contain the same item, the item lives in \`todo.md\`, not here.
 4.3.5. Keep it concise as the project moves: update the phases in place, mark finished phases done, and delete what no longer guides a decision. Do not accumulate an append-only plan — an outdated plan at the head of the file is the part that falls out of your context first.
 
 ### 4.4 \`tortuous.md\` — negative knowledge

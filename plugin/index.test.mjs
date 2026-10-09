@@ -781,13 +781,16 @@ const PROJECT_MARKERS = {
     .text({});
   for (const needle of [
     'only the end of the document is inlined',
-    'must stay concise and be updated as the project moves',
-    'must stay short and current',
-    'must stay bounded',
-    'ever-growing `done.md` is a **defect**',
+    'The budget is a fence, not a quota',
+    'the omitted head stays safe in the file on disk',
+    'never spend steps shrinking it',
+    'Never compress a document to fit its budget',
+    'touching it is not an event',
+    'Move an item into `done.md` in the **same commit**',
+    'move it down to `todo.md`',
     'Do not accumulate an append-only plan',
   ]) {
-    assert.ok(protocolText.includes(needle), `§4 states the conciseness rule: ${needle}`);
+    assert.ok(protocolText.includes(needle), `§4 states the fence-not-quota rule: ${needle}`);
   }
   console.log('digest configuration: OK');
 }

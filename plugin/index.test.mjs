@@ -187,6 +187,11 @@ function makeCtx() {
     'A spawned subagent inherits nothing',
     'Leave the tree clean, or say so',
     'When in doubt, stop and report',
+    // §2: task-scoped grants die with their task.
+    'A task-scoped publish grant dies with its task',
+    'remove the task-scoped',
+    'grant left behind after its task is drift',
+    'a grant left behind after its task is drift',
     // §12.8/§12.9: subagent conventions.
     'Two subagent modes',
     'subagent_fork',

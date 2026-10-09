@@ -395,6 +395,7 @@ close one logical unit of work
    → confirm the repository is in the state you believe it is
    → walk the layout: does every directory still say what it holds? (§5.6, §7.1)
    → update done.md (and todo.md / plan.md / tortuous.md as they changed)
+   → remove the task-scoped \`push allowed:\` grant line if this task was authorized to publish (§1.2)
    → git commit
 \`\`\`
 
@@ -403,6 +404,7 @@ close one logical unit of work
 2.3. Do **not** accumulate a large uncommitted working tree either: if a logical unit is finished and verified, commit it before starting the next one.
 2.4. End a turn with a clean working tree, or an explicit statement of what is deliberately left uncommitted and why.
 2.5. If an experiment is not worth keeping, revert or restore the file — do not delete the evidence by hand.
+2.6. **A task-scoped publish grant dies with its task.** If this logical unit carried a \`push allowed:\` grant (§1.2), removing it is part of closing the unit — the same motion as clearing your 正在做 line. The next task starts local-only until the user authorizes again; a grant left behind after its task is drift, record it (§9).
 
 ## 3. \`README.md\` and \`docs/\` answer different questions
 

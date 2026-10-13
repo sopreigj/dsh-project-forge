@@ -44,6 +44,7 @@
 
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -953,7 +954,15 @@ export function apply(ctx, config) {
       }
     }
     if (config.digestFiles.includes('tortuous.md') === false) blocks.push('', DIGEST_NOTE);
-    state.text = blocks.join('\n');
+    // `systemPrompt.context()` entries are ALWAYS run through dsh-system-prompt's
+    // strict `{{variable}}` interpolator — the `interpolate: false` option is only
+    // honored on sections, and a document quoting Vue/mustache braces (e.g. a
+    // forensics report quoting `{{playCount|formatPlayCount}}`) otherwise throws
+    // `malformed prompt variable reference` during prompt assembly and kills every
+    // turn while the text stays in the digest (dc6b5fa7 10-03, 4ddb3937 10-13).
+    // Breaking every `{{` into `{ {` makes the whole text uninterpolatable; the
+    // model reads the file when it needs the exact spelling (the note above says so).
+    state.text = blocks.join('\n').replaceAll('{{', '{ {');
     state.at = Date.now();
     state.status = 'ready';
   };
@@ -1371,6 +1380,73 @@ export function apply(ctx, config) {
         }),
       'project-forge.concurrentWriteGuard()',
     );
+  }
+
+  // ── Guard F: malformed tool-call repair (empty call id) ──────────────────────
+  // A model that writes a broken function tag (`<function=psh?` — observed with
+  // mimo-v2.6-flash) makes pi-ai emit a tool-call block whose id is an empty
+  // string. The loop tolerates it in memory, but the V4 session codec refuses to
+  // persist the tool/result with an empty callId ("requires toolCallId matching
+  // its tool source"), the drain wedges on the poisoned batch, and the session
+  // file freezes at the tool/call line forever — seven sessions died exactly so
+  // between 2026-10-08 and 2026-10-12, all unrecoverable. Rewriting the empty id
+  // to a synthetic one at the stream boundary turns the fatal poison into an
+  // ordinary unknown-tool error, which the model reads and recovers from (8/8
+  // survivor sessions prove that path is safe).
+  if (config.guardMalformedToolCall !== false) {
+    ctx.effect(
+      () =>
+        ctx.on('llm/stream', (options, next) => {
+          // The waterfall is process-wide; repair only streams owned by agents this
+          // plugin instance manages (other presets' compositions are out of scope).
+          const sessionId = options?.sessionId;
+          if (typeof sessionId !== 'string' || !states.has(sessionId)) return next();
+          return repairMalformedToolCallIds(next(), (message) => ctx.logger?.warn?.(message));
+        }),
+      'project-forge.malformedToolCallRepair()',
+    );
+  }
+}
+
+/**
+ * Rewrite empty tool-call ids in one LLM chunk stream to a synthetic non-empty id.
+ * The pi-ai adapter passes a malformed function tag through as a tool-call block with
+ * `id: ""` (llm-deepseek rejects the whole response instead); the loop survives that
+ * in memory, but the V4 session codec refuses to persist the tool/result with an
+ * empty callId and the drain wedges on the poisoned batch — the session file freezes
+ * mid-turn and never recovers. A synthetic id turns the fatal poison into an ordinary
+ * unknown-tool error the model can recover from.
+ * @param stream - the downstream chunk stream.
+ * @param warn - logger for each repaired call.
+ * @returns the same chunks, with empty tool-call ids replaced.
+ */
+async function* repairMalformedToolCallIds(stream, warn) {
+  /** Synthetic ids already assigned, keyed by block index, so the delta chain and the
+   * block-end of one malformed call agree on the same id. */
+  const repaired = new Map();
+  const syntheticIdFor = (index) => {
+    let id = repaired.get(index);
+    if (id === undefined) {
+      id = `malformed-${randomUUID()}`;
+      repaired.set(index, id);
+    }
+    return id;
+  };
+  for await (const chunk of stream) {
+    if (chunk?.type === 'tool-call-delta' && chunk.id === '') {
+      yield { ...chunk, id: syntheticIdFor(chunk.index) };
+      continue;
+    }
+    if (chunk?.type === 'block-end' && chunk.block?.type === 'tool-call' && chunk.block.id === '') {
+      const id = syntheticIdFor(chunk.index);
+      warn?.(
+        `project-forge: repaired a malformed tool call (empty id, name ${JSON.stringify(chunk.block.name)}) as ${id}; ` +
+          'the model wrote a broken function tag. The call will fail as an unknown tool.',
+      );
+      yield { ...chunk, block: { ...chunk.block, id } };
+      continue;
+    }
+    yield chunk;
   }
 }
 

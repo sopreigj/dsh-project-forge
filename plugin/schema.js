@@ -50,6 +50,7 @@ const DEFAULTS = Object.freeze({
   guardConcurrentWrite: true,
   /** Which shared files the concurrent-write guard protects. */
   concurrentWriteMode: 'both',
+  guardMalformedToolCall: true,
 })
 
 /** Field → the JSON type the Loader must supply. */
@@ -73,6 +74,7 @@ const TYPES = Object.freeze({
   guardSecrets: 'boolean',
   guardConcurrentWrite: 'boolean',
   concurrentWriteMode: 'string',
+  guardMalformedToolCall: 'boolean',
 })
 
 /** Field type for one raw configuration value. */
@@ -179,6 +181,10 @@ function normalize(raw) {
  * - `guardCommitCheckpoint` (boolean, default true) — after a compaction, refuse
  *   `git commit` until a state document has been updated; when the digest can see
  *   commits the documents do not mention, refuse it too.
+ * - `guardMalformedToolCall` (boolean, default true) — rewrite an empty tool-call id
+ *   arriving from the model stream into a synthetic non-empty one. An empty id kills
+ *   the session: the V4 writer refuses the matching tool/result, the drain wedges,
+ *   and the session file freezes mid-turn forever (7 real deaths, 2026-10-08..12).
  */
 export const Config = Object.freeze({
   '~standard': {

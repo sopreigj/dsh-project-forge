@@ -79,8 +79,9 @@ dsh-project-forge/
 └── README.md / README.zh.md / LICENSE
 ```
 
-`docs/` follows Diátaxis — one reader need per file: [configuration.md](docs/configuration.md) is
-the reference, [state-boundary.md](docs/state-boundary.md) explains the boundary (design, export
+`docs/` follows Diátaxis — one reader need per file: [getting-started.md](docs/getting-started.md) is
+the tutorial (install, verify which copy is live, first takeover), [configuration.md](docs/configuration.md)
+is the reference, [state-boundary.md](docs/state-boundary.md) explains the boundary (design, export
 flow, guard coverage), and `open-sourcing.md` holds the open-sourcing notes.
 
 In this development repository the state boundary `private/` is tracked by git (so state is

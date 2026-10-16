@@ -4,18 +4,21 @@
 # roster in the New-Session agent-preset control then offers "项目锻造模式 / Project
 # Steward" beside the shipped standard, ptc, minimal and cordis presets.
 #
-# Composition (verified against the shipped presets by top-level row id):
+# Composition (machine-checked against the shipped preset by
+# `node release/check-preset-sync.mjs --source <dsh-checkout>`):
 #   - all 19 top-level rows of the shipped `standard` preset, including the whole
 #     `compaction` group (`compaction-basic`, `command-compact`,
 #     `tool-result-pruner`) with `isolate: { compaction, toolResultPruner }`. Context
 #     compaction is therefore available exactly as in `standard` — unlike the shipped
 #     `minimal` preset, which contains no compaction row at all.
 #   - plus `project-forge` (the protocol plugin) and `tool-str-replace-editor`.
-#   - without `tool-ralph`, `tool-subagent-codex`, `tool-subagent-claude-code` and
-#     `tool-presentation`; the first three are `disabled: true` in `standard`.
+#   - without the three rows `standard` carries but this mode has no use for: the
+#     `ralph` loop and the two extra subagent providers (codex, claude-code), all of
+#     them `disabled: true` in `standard` as well.
 #
-# Maintenance note: when a shipped preset gains a row this mode should also have, add it
-# here too. Rows are self-contained; nothing is inherited from `standard`.
+# Maintenance note: when a shipped preset gains a row or a config key this mode should
+# also have, `check-preset-sync.mjs` fails until the row is copied here or the
+# difference is recorded as deliberate in that script.
 
 - insert:
     - id: preset-project-forge
@@ -162,7 +165,7 @@
                   #                      for simple tasks, code review, read-only recon that must
                   #                      not carry the parent's conversation.
                   #   `subagent_fork` → fork: inherits the parent's preset AND context (protocol,
-                    #                      digest, vocabulary) — for complex collaboration.
+                  #                      digest, vocabulary) — for complex collaboration.
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true

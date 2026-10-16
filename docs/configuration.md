@@ -29,6 +29,7 @@ code that implements it.
 | `journalRecoveryEntries` | `5` | How many of those entries ride the recovery message. |
 | `tortuousFile` | `"tortuous.jsonl"` | The append-only negative-knowledge file. Never inlined; only a one-line-per-record index is. |
 | `tortuousIndexBytes` | `2500` | Character ceiling for that index. |
+| `repoCommitWindow` | `8` | How many recent commits the repository block lists. The checkpoint guard reads the same list, so this is also its look-back window. |
 | `repoStateInDigest` | `true` | Append branch, HEAD and recent commit subjects, so document/repository drift is visible without spending a tool call. |
 | `stewardFile` | `true` | Inline the repository's own rules, making the repository self-describing. |
 | `stewardFilePath` | `"private/steward.md"` | Where those rules live. A repository that still keeps them at `.agents/steward.md` is read there too. |

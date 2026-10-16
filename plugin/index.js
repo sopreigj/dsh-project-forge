@@ -1437,7 +1437,7 @@ export function apply(ctx, config) {
     const blocks = [DIGEST_HEADING, '', parts.join('\n\n')];
     const documentText = parts.join('\n').toLowerCase();
     if (config.repoStateInDigest !== false) {
-      const repo = readRepoState(cwd);
+      const repo = readRepoState(cwd, config.repoCommitWindow);
       if (repo !== undefined) {
         blocks.push('', REPO_HEADING, '', repo);
         state.repoLog = repo;

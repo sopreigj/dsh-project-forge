@@ -65,6 +65,11 @@ export const DEFAULTS = Object.freeze({
   /** Character ceiling for the negative-knowledge index rendered into the digest. */
   tortuousIndexBytes: 2500,
   repoStateInDigest: true,
+  /**
+   * How many recent commits the digest's repository block lists. `guardCommitCheckpoint`
+   * reads that same list to spot commits no document mentions, so this is also its window.
+   */
+  repoCommitWindow: 8,
   stewardFile: true,
   stewardFilePath: 'private/steward.md',
   /**
@@ -134,6 +139,7 @@ const TYPES = Object.freeze({
   tortuousFile: 'string',
   tortuousIndexBytes: 'number',
   repoStateInDigest: 'boolean',
+  repoCommitWindow: 'number',
   stewardFile: 'boolean',
   stewardFilePath: 'string',
   digestMaxBytes: 'number',
@@ -271,6 +277,8 @@ function normalize(raw) {
  * - `repoStateInDigest` (boolean, default true) — append branch, HEAD and the recent
  *   commit subjects to the digest, so drift between the documents and the repository
  *   is visible without spending a tool call.
+ * - `repoCommitWindow` (number, default 8) — how many recent commits the repository block
+ *   lists; the checkpoint guard's drift signal reads the same list.
  * - `stewardFile` (boolean, default true) — also inline the repository's own rule file,
  *   making the repository self-describing.
  * - `stewardFilePath` (string, default `private/steward.md`) — that file's path. A project

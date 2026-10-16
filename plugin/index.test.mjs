@@ -584,7 +584,7 @@ const PROJECT_MARKERS = {
     'git branch -D feature',
   ]) {
     assert.ok(
-      String(localGitGuard(shell(command, guardAgent))).includes('local-only'),
+      String(localGitGuard(shell(command, guardAgent))).includes('仅本地'),
       `refuses ${command}`,
     );
   }
@@ -620,14 +620,14 @@ const PROJECT_MARKERS = {
 
     // No grant: refused, and the refusal teaches the one-shot grant syntax.
     const noGrant = pushGuard(shell('git push origin main', gAgent));
-    assert.ok(String(noGrant).includes('local-only') && String(noGrant).includes('push allowed:'), 'refused without a grant, with grant syntax in the refusal');
+    assert.ok(String(noGrant).includes('仅本地') && String(noGrant).includes('push allowed:'), 'refused without a grant, with grant syntax in the refusal');
 
     // Write a ×1 grant: one push passes, the grant line is consumed, the next push is refused.
     writeFileSync(join(repo, '.agents', 'steward.md'), '# rules\n\npush allowed: github.com/sopreigj/nhentai-downloader ×1\n');
     assert.equal(pushGuard(shell('git push origin main', gAgent)), undefined, 'first push consumes the ×1 grant');
     const stewardAfter1 = rfs2(join(repo, '.agents', 'steward.md'), 'utf8');
     assert.ok(!stewardAfter1.includes('push allowed'), 'the ×1 grant line is gone after use');
-    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('local-only'), 'second push refused — the grant was one-shot');
+    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('仅本地'), 'second push refused — the grant was one-shot');
 
     // ×2 grant: counts down, then runs out.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/* ×2\n');
@@ -639,7 +639,7 @@ const PROJECT_MARKERS = {
 
     // A grant for a different remote does not cover this one.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/someone-else/*\n');
-    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('local-only'), 'mismatched grant refused');
+    assert.ok(String(pushGuard(shell('git push origin main', gAgent))).includes('仅本地'), 'mismatched grant refused');
 
     // An explicit-URL push matches the URL form directly.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/* ×1\n');
@@ -647,9 +647,9 @@ const PROJECT_MARKERS = {
 
     // Force pushes are never covered by a grant, even with grants in stock.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: *\n');
-    assert.ok(String(pushGuard(shell('git push -f origin main', gAgent))).includes('force'), 'force push refused despite wildcard grant');
-    assert.ok(String(pushGuard(shell('git push --force-with-lease origin main', gAgent))).includes('force'), 'force-with-lease refused');
-    assert.ok(String(pushGuard(shell('git remote add upstream https://github.com/x/y.git', gAgent))).includes('local-only'), 'remote add never covered');
+    assert.ok(String(pushGuard(shell('git push -f origin main', gAgent))).includes('强推'), 'force push refused despite wildcard grant');
+    assert.ok(String(pushGuard(shell('git push --force-with-lease origin main', gAgent))).includes('强推'), 'force-with-lease refused');
+    assert.ok(String(pushGuard(shell('git remote add upstream https://github.com/x/y.git', gAgent))).includes('仅本地'), 'remote add never covered');
 
     rmSync(repo, { recursive: true, force: true });
     console.log('one-shot push grants: OK');
@@ -795,12 +795,12 @@ const PROJECT_MARKERS = {
     // A second agent on the SAME file is refused while A's claim holds.
     const refused = cwGuard({ name: 'write', arguments: { file_path: join(repo, 'done.md') }, agent: agentB });
     assert.equal(typeof refused, 'string', 'B is refused on a file A has claimed');
-    assert.ok(/claimed by session/.test(refused), 'the refusal names the claim');
+    assert.ok(/已被会话/.test(refused), 'the refusal names the claim');
     // The refusal must show a recognisable owner id, not the "session-" prefix: owner ids all
     // start with "session-", so a naive slice(0,8) rendered an anonymous ghost (real bug,
     // PaperQuer 2026-10-08). The UUID portion must be visible.
-    assert.ok(!/claimed by session session-$/.test(refused), 'the owner id is not truncated to "session-"');
-    assert.ok(/claimed by session [0-9a-f]{8}/.test(refused), 'the refusal shows the owner UUID');
+    assert.ok(!/已被会话 session-$/.test(refused), 'the owner id is not truncated to "session-"');
+    assert.ok(/已被会话 [0-9a-f]{8}/.test(refused), 'the refusal shows the owner UUID');
 
     // A stale claim (owner gone quiet past the staleness window) is deleted and taken over.
     const { readFileSync: rfs, writeFileSync: wfs, existsSync: exs } = await import('node:fs');
@@ -964,7 +964,7 @@ const PROJECT_MARKERS = {
     assert.ok(layoutGuard, 'the layout guard is registered');
     const refusal = layoutGuard(shell('git commit -m "x"', layAgent));
     assert.equal(typeof refusal, 'string', 'a mixed-kind root is refused until acknowledged');
-    assert.ok(refusal.includes('layout'), 'the refusal is about the layout');
+    assert.ok(refusal.includes('布局'), 'the refusal is about the layout');
     assert.ok(refusal.includes('tool.py'), 'the refusal names what it measured');
 
     // A bare file name in the documents does NOT acknowledge: state documents mention file
@@ -1035,7 +1035,7 @@ const PROJECT_MARKERS = {
     assert.ok(secretsGuard, 'the secrets guard is registered');
     const refusal = secretsGuard(shell('git commit -m "x"', secAgent));
     assert.equal(typeof refusal, 'string', 'a tracked .env refuses the commit');
-    assert.ok(refusal.includes('credential') || refusal.includes('secret'), 'the refusal is about secrets');
+    assert.ok(refusal.includes('凭据'), 'the refusal is about secrets');
     assert.ok(refusal.includes('.env'), 'the refusal names the offending file');
 
     // Untracking the credential file clears it.
@@ -1108,21 +1108,21 @@ const PROJECT_MARKERS = {
     const homeRefusal = refusalFor();
     assert.equal(typeof homeRefusal, 'string', 'a home path in the public surface refuses the commit');
     assert.ok(homeRefusal.includes('app.py'), 'the refusal names the offending file');
-    assert.ok(homeRefusal.includes('home directory'), 'the refusal says what leaked');
+    assert.ok(homeRefusal.includes('家目录'), 'the refusal says what leaked');
     writeFileSync(join(pub, 'app.py'), 'print(1)\n');
 
     // 2. Source reaching into the state boundary: after export that path does not exist.
     writeFileSync(join(pub, 'app.py'), `NOTES = "${'private'}/notes/session.md"\n`);
     const reachRefusal = refusalFor();
     assert.equal(typeof reachRefusal, 'string', 'source reaching into the boundary refuses the commit');
-    assert.ok(reachRefusal.includes('state boundary'), 'the refusal names the boundary');
+    assert.ok(reachRefusal.includes('状态边界'), 'the refusal names the boundary');
     writeFileSync(join(pub, 'app.py'), 'print(1)\n');
 
     // 3. A high-confidence secret literal outside a configuration file.
     writeFileSync(join(pub, 'app.py'), 'api_key = "AKIAIOSFODNN7EXAMPLE"\n');
     const secretRefusal = refusalFor();
     assert.equal(typeof secretRefusal, 'string', 'a secret literal in source refuses the commit');
-    assert.ok(secretRefusal.includes('configuration file'), 'the refusal points at the config-file rule');
+    assert.ok(secretRefusal.includes('配置文件'), 'the refusal points at the config-file rule');
 
     // A configuration file is the sanctioned carrier — with an example twin for newcomers.
     writeFileSync(join(pub, 'config.yaml'), 'api_key: "AKIAIOSFODNN7EXAMPLE"\n');
@@ -1296,7 +1296,7 @@ const PROJECT_MARKERS = {
   writeFileSync(recordPath, existing);
   const refusalFor = (content) => appendRecord.guards
     .map((guard) => guard({ name: 'write', arguments: { file_path: recordPath, content }, agent: appendAgent }))
-    .find((answer) => typeof answer === 'string' && answer.includes('append-only'));
+    .find((answer) => typeof answer === 'string' && answer.includes('只追加'));
   const refusal = refusalFor('{"id":"J2","kind":"checkpoint"}\n');
   assert.equal(typeof refusal, 'string', 'a write that drops the records already on disk is refused');
   assert.ok(refusal.includes('journal.jsonl'), 'the refusal names the file');

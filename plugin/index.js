@@ -1636,8 +1636,8 @@ export function apply(ctx, config) {
           // A forced push rewrites published history: grants never cover it.
           if (escape.label === 'git push' && /\bgit\s+push\b[^|&]*(\s-f\b|--force\b|--force-with-lease)/.test(stripQuoted(command))) {
             return [
-              'Project Forge Mode refuses this `git push`: force pushes rewrite published history,',
-              'which no one-shot grant covers. If you must, the user disables `guardLocalGit` explicitly.',
+              '项目锻造模式拒绝这次 `git push`：强推会重写已发布的历史，',
+              '任何一次性授权都不覆盖它。确需如此，由用户显式关闭 `guardLocalGit`。',
             ].join(' ');
           }
           // `git push` consumes a one-shot grant from the repository\'s own steward rules.
@@ -1646,20 +1646,20 @@ export function apply(ctx, config) {
             const granted = typeof cwd === 'string' && checkPushGrant(cwd, config, command) === true;
             if (granted) return undefined; // grant consumed — this push, and only this push, proceeds
             return [
-              'Project Forge Mode refuses `git push`: this repository is local-only, and no one-shot',
-              'grant covers this push. To authorize exactly one push sequence, add ONE line to the',
-              `repository's steward rules (\`${stewardDisplayPath(config)}\`)`,
-              '(only because the user explicitly asked to publish):',
-              '`push allowed: <remote-url-or-glob> [×N]` — each guarded push consumes one grant',
-              'and the repository returns to local-only when they run out. History-rewriting',
-              'operations are never covered by a grant.',
+              '项目锻造模式拒绝 `git push`：本仓库仅本地，没有任何一次性授权覆盖这次推送。',
+              '要授权恰好一次推送，请在仓库自带规则里加一行（只有用户明确要求发布时才这么做）：',
+              `规则文件：\`${stewardDisplayPath(config)}\`，`,
+              '写法如下：',
+              '`push allowed: <remote-url-or-glob> [×N]` —— 每次受守卫的推送消耗一次授权，',
+              '用尽后仓库立即回到仅本地。重写历史的操作',
+              '永远不在授权范围内。',
             ].join(' ');
           }
           return [
-            `Project Forge Mode refuses \`${escape.label}\`: this repository is local-only.`,
-            'The user has not authorized publishing or history rewriting.',
-            'Continue with local checkpoint commits instead; if the user explicitly asks to publish in a',
-            'later message, they must clear this guard themselves.',
+            `项目锻造模式拒绝 \`${escape.label}\`：本仓库仅本地。`,
+            '用户没有授权发布，也没有授权重写历史。',
+            '请改用本地检查点提交；如果用户在后续消息里明确要求发布，',
+            '必须由用户自己解除这条守卫。',
           ].join(' ');
         }),
       'project-forge.localGitGuard()',
@@ -1695,13 +1695,13 @@ export function apply(ctx, config) {
             .toLowerCase();
           if (acknowledgesLayout(documents, facts)) return undefined;
           return [
-            'Project Forge Mode refuses `git commit`: the layout of this repository has not been checked.',
-            `The project root holds ${facts.rootFiles.length} non-document files across ${facts.kinds.length} kinds`
-              + ` (${facts.kinds.join(', ')}) and ${facts.directories.length} directories`
-              + ` (top level: ${facts.topLevel.slice(0, 8).join(', ')}${facts.topLevel.length > 8 ? ', …' : ''}).`,
-            'Walk the tree (§5.5) and record the result in `done.md`: what each directory holds, where a new',
-            'file belongs, and what you concluded. A bare file name does not count — name a directory, or',
-            'state explicitly that the flat layout is a decision (「保持扁平」/ "kept flat: <why>") — then commit.',
+            '项目锻造模式拒绝 `git commit`：这个仓库的布局还没有被检查过。',
+            `项目根现有 ${facts.rootFiles.length} 个非文档文件（${facts.kinds.length} 类`
+              + `：${facts.kinds.join(', ')}）与 ${facts.directories.length} 个目录`
+              + `（顶层：${facts.topLevel.slice(0, 8).join(', ')}${facts.topLevel.length > 8 ? ', …' : ''}）。`,
+            '按 §5.5 走查这棵树，把结论记进 `done.md`：每个目录装什么、新文件该放哪、',
+            '你的结论是什么。只写文件名不算——要点名一个目录，或者显式说明',
+            '扁平布局是一个决定（「保持扁平」/ "kept flat: <why>"）——然后再提交。',
           ].join(' ');
         }),
       'project-forge.layoutCheckpointGuard()',
@@ -1758,10 +1758,10 @@ export function apply(ctx, config) {
           if (before === undefined || before.length === 0) return undefined;
           if (content.startsWith(before)) return undefined;
           return [
-            `Project Forge Mode refuses this write: \`${path}\` is an append-only record file.`,
-            'Its lines are read as records and the digest index is derived from them, so a write that',
-            'does not keep the text already on disk as its prefix loses records silently.',
-            'Write the previous content followed by the new record(s) — or append to the end — and retry.',
+            `项目锻造模式拒绝这次写入：\`${path}\` 是只追加的记录文件。`,
+            '它的每一行都被当作一条记录读，digest 的索引也由它们派生，所以',
+            '不保留磁盘上已有文本作为前缀的写入会静默丢记录。',
+            '请先写回原有内容、再追加新记录（或直接追加到文件末尾），然后重试。',
           ].join(' ');
         }),
       'project-forge.appendOnlyGuard()',
@@ -1803,12 +1803,12 @@ export function apply(ctx, config) {
           }
           if (offenders.length === 0) return undefined;
           return [
-            'Project Forge Mode refuses `git commit`: a contract document is over its hard cap and this commit',
-            `grows it further — ${offenders.join('；')}.`,
-            `The budget is ${JSON.stringify(config.documentBudgets)} characters; the hard cap is `
-              + `${config.sizeHardRatio}× a budget. Shrinking, splitting and moving content always pass.`,
-            'Move the oldest or finest-grained content into the record file or `rationale/`, keeping only what',
-            'is still in force, and commit again.',
+            '项目锻造模式拒绝 `git commit`：有合同文档已越过硬上限，而这次提交让它更大 —— ',
+            `${offenders.join('；')}。`,
+            `预算是 ${JSON.stringify(config.documentBudgets)} 字符；硬上限是`
+              + `预算的 ${config.sizeHardRatio} 倍。瘦身、拆分、把内容搬走永远都能通过。`,
+            '把最旧或最细的内容搬进记录文件或 `rationale/`，正文只留',
+            '现在还生效的东西，然后再提交。',
           ].join(' ');
         }),
       'project-forge.sizeRatchetGuard()',
@@ -1904,12 +1904,12 @@ export function apply(ctx, config) {
           );
           if (offending.length === 0) return undefined;
           return [
-            'Project Forge Mode refuses `git commit`: the public surface is staged to record a credential.',
-            `Tracked file(s) outside the state boundary that exist only to hold secrets: ${offending.slice(0, 5).join(', ')}${offending.length > 5 ? ` and ${offending.length - 5} more` : ''}.`,
-            'A committed secret stays in `git log` forever — removing it later does not erase history.',
-            `Keep it inside \`${stateDirDisplayPath(config)}/\` (the local-only side of the project), or`,
-            'move the value into an untracked, gitignored file. Purge it from history',
-            '(`git rm --cached` + filter or BFG) before committing. See §1.6 and §1.7 of the protocol.',
+            '项目锻造模式拒绝 `git commit`：这次提交会把凭据文件记进公开面。',
+            `状态边界之外、只为存放密钥而存在的受跟踪文件：${offending.slice(0, 5).join(', ')}${offending.length > 5 ? ` 等共 ${offending.length} 个` : ''}。`,
+            '提交进历史的密钥会永远留在 `git log` 里 —— 事后删除并不能抹掉历史。',
+            `把它放进 \`${stateDirDisplayPath(config)}/\`（本仓库仅本地的那一侧），或者`,
+            '把值移到未跟踪、已 gitignore 的文件里。提交前先从历史里清除它',
+            '（`git rm --cached` 加 filter 或 BFG）。见协议 §1.6 与 §1.7。',
           ].join(' ');
         }),
       'project-forge.secretsGuard()',
@@ -1937,14 +1937,14 @@ export function apply(ctx, config) {
             .map((finding) => `\`${finding.path}\` (${finding.reasons.join('; ')})`)
             .join(', ');
           return [
-            'Project Forge Mode refuses `git commit`: the public surface is not open-source-ready.',
-            `Offending file(s): ${shown}${findings.length > 4 ? ` and ${findings.length - 4} more` : ''}.`,
-            `Everything outside \`${stateDirDisplayPath(config)}/\` is written as if the project were already public:`,
-            'no home directory of this machine, no source file reaching into the boundary, and no secret',
-            'literal outside a configuration file (a config file that carries real values ships an example',
-            'twin for newcomers). Move the value into the boundary, abstract it into a config file with an',
-            'example beside it, or — for a file whose whole job is to demonstrate the boundary — mark it',
-            `\`${PRIVACY_ALLOW_MARKER}\`. See §1.7 of the protocol.`,
+            '项目锻造模式拒绝 `git commit`：公开面还不是开源就绪的样子。',
+            `涉及的文件：${shown}${findings.length > 4 ? ` 等共 ${findings.length} 个` : ''}。`,
+            `\`${stateDirDisplayPath(config)}/\` 之外的一切都按“项目已经公开”来写：`,
+            '不出现本机家目录、源码不伸手进状态边界、配置文件之外',
+            '不出现高置信的密钥字面量（带真实值的配置文件要随附一份示例孪生',
+            '给新同事）。请把这个值搬进边界、抽象进配置文件并附上示例，',
+            '或者——对于整份文件就是为了演示这条边界的——给它打上',
+            `\`${PRIVACY_ALLOW_MARKER}\` 标记。见协议 §1.7。`,
           ].join(' ');
         }),
       'project-forge.privacyBoundaryGuard()',
@@ -2033,16 +2033,16 @@ export function apply(ctx, config) {
           clearStaleClaims(cwd, config);
           if (claim !== undefined && claim.owner !== self) {
             return [
-              `Project Forge Mode refuses to write \`${rel}\`: it is claimed by session ${shortId(claim.owner)}.`,
-              'That session is editing it right now; a second writer would silently overwrite its work.',
-              'Coordinate (or ask it to commit — a commit releases every claim), then try again. See §12.',
+              `项目锻造模式拒绝写入 \`${rel}\`：它已被会话 ${shortId(claim.owner)} 认领。`,
+              '那个会话正在改它；第二个写者会静默覆盖它的成果。',
+              '先协调（或请它提交 —— 一次成功提交会释放所有认领），然后重试。见 §12。',
             ].join(' ');
           }
           if (dirty === true && claim?.owner !== self) {
             return [
-              `Project Forge Mode refuses to write \`${rel}\`: it has uncommitted changes.`,
-              'Another session likely edited it and has not committed; re-read it and reconcile before writing.',
-              'See §12 of the protocol.',
+              `项目锻造模式拒绝写入 \`${rel}\`：它还有未提交的改动。`,
+              '多半是另一个会话改过它、还没提交；请重新读一遍、对账之后再写。',
+              '见协议 §12。',
             ].join(' ');
           }
           // Take or keep the claim, then allow the write.

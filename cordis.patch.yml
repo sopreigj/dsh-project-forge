@@ -42,16 +42,13 @@
               protocol: true
               recoveryProcedure: true
               digest: true
-              # Per-document tail budget. Each document is inlined from its END, because
-              # the maintained documents read newest-last: an overgrown document drops
-              # its own head, never its current state.
-              digestTailLimits:
-                plan.md: 20000
-                todo.md: 10000
-                done.md: 20000
+              # Budgets are NOT repeated here: documentBudgets /
+              # documentBudgetDefault live in the plugin schema's defaults, so a
+              # rename there can never leave this row with a config field the
+              # installed plugin rejects (the 2026-10-16 resume failure).
               repoStateInDigest: true
               stewardFile: true
-              stewardFilePath: .agents/steward.md
+              stewardFilePath: private/steward.md
               injectOnCompaction: true
               # Bound the recovery message to the first step of a turn, so several
               # surface replacements inside one turn cannot stack messages.
@@ -165,7 +162,7 @@
                   #                      for simple tasks, code review, read-only recon that must
                   #                      not carry the parent's conversation.
                   #   `subagent_fork` → fork: inherits the parent's preset AND context (protocol,
-                      #                      digest, vocabulary) — for complex collaboration.
+                    #                      digest, vocabulary) — for complex collaboration.
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true

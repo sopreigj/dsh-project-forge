@@ -13,9 +13,9 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const pluginPath = resolve(process.argv[2] ?? '.');
@@ -85,6 +85,80 @@ for (const [raw, why] of [
 ]) {
   const result = standard.validate(raw);
   assert.ok(Array.isArray(result.issues) && result.issues.length > 0, `rejected: ${why}`);
+}
+
+// ── Preset patch ↔ schema drift guard ─────────────────────────────────────────
+// The preset row is the only place the Loader takes this plugin's config from. When the
+// schema renames a field and the patch is not updated (this happened on 2026-10-16:
+// `digestTailLimits` survived the v4 rename to `documentBudgets`), every session on the
+// preset fails to resume with `invalid config: unknown config field ...`. Validate the
+// shipped row through the same Standard Schema the Loader uses, so `npm test` catches it.
+{
+  const patchPath = [
+    join(dirname(pluginPath), '..', 'cordis.patch.yml'), // argv[2] = plugin/index.js
+    join(dirname(pluginPath), 'cordis.patch.yml'),       // argv[2] = .../plugin
+    join(pluginPath, 'cordis.patch.yml'),                // argv[2] = package root
+    join(pluginPath, '..', 'cordis.patch.yml'),
+  ].find((candidate) => existsSync(candidate));
+  assert.ok(patchPath, 'cordis.patch.yml found next to the plugin package');
+  const patchLines = readFileSync(patchPath, 'utf8').split(/\r?\n/);
+  const rowIndex = patchLines.findIndex((line) => /^\s*-\s+id:\s*project-forge\s*$/.test(line));
+  assert.ok(rowIndex >= 0, 'preset patch declares the project-forge plugin row');
+
+  let nameLine = -1;
+  let configLine = -1;
+  for (let i = rowIndex + 1; i < patchLines.length; i++) {
+    if (/^\s*(#|$)/.test(patchLines[i])) continue;
+    if (/^\s*-\s+id:/.test(patchLines[i])) break; // next row
+    if (/^\s*name:/.test(patchLines[i])) nameLine = i;
+    if (/^\s*config:\s*$/.test(patchLines[i])) { configLine = i; break; }
+  }
+  assert.ok(nameLine >= 0 && configLine >= 0, 'patch row has a name and a config block');
+  const pkg = JSON.parse(readFileSync(join(dirname(patchPath), 'package.json'), 'utf8'));
+  assert.equal(
+    patchLines[nameLine].replace(/^\s*name:\s*/, '').replace(/^['"]|['"]$/g, ''),
+    pkg.name,
+    'patch row loads this package',
+  );
+
+  // Direct children of `config:` are scalars; any nested mapping (e.g. documentBudgets)
+  // is collected as an object of its own scalar children.
+  const configIndent = patchLines[configLine].match(/^\s*/)[0].length;
+  const parseScalar = (text) => {
+    const value = text.trim().replace(/\s+#.*$/, '');
+    if (value === 'true' || value === 'false') return value === 'true';
+    if (/^-?\d+$/.test(value)) return Number(value);
+    if (/^\[.*\]$/.test(value)) return value.slice(1, -1).split(',').map((item) => item.trim()).filter(Boolean);
+    return value.replace(/^['"]|['"]$/g, '');
+  };
+  const rowConfig = {};
+  let childIndent = -1;
+  let currentKey = null;
+  for (let i = configLine + 1; i < patchLines.length; i++) {
+    const line = patchLines[i];
+    if (/^\s*(#|$)/.test(line)) continue;
+    const indent = line.match(/^\s*/)[0].length;
+    if (indent <= configIndent) break;
+    const entry = /^\s*([A-Za-z_][\w]*):\s*(.*)$/.exec(line);
+    if (!entry) continue;
+    const key = entry[1];
+    const rawValue = entry[2] ?? '';
+    if (childIndent < 0) childIndent = indent;
+    if (indent > childIndent) {
+      if (currentKey !== null && rowConfig[currentKey] !== null && typeof rowConfig[currentKey] === 'object') {
+        rowConfig[currentKey][key] = parseScalar(rawValue);
+      }
+      continue;
+    }
+    currentKey = key;
+    rowConfig[key] = rawValue.trim() === '' ? {} : parseScalar(rawValue);
+  }
+
+  const checked = standard.validate(rowConfig);
+  assert.ok(
+    !('issues' in checked),
+    `preset patch config satisfies the plugin schema: ${JSON.stringify(checked.issues ?? [])}`,
+  );
 }
 
 // ── Stub Cordis context ─────────────────────────────────────────────────────────
@@ -162,6 +236,7 @@ function makeCtx() {
     '## 排队', '## 待验证', '## 等用户', '## 现在做', '一条一行、可开工',
     '一次一个"当前方向"', '显式处置',
     'journal.jsonl', 'tortuous.jsonl', 'kind', 'conclusion', 'rationale/',
+    '文件里不抄规则',
     '只记失败的探索', '绝不因为难堪',
     // §5: layered organization and the layout rules.
     '分层模块化层级 + 明确模块边界与依赖方向', '高内聚、低耦合、最小重复',

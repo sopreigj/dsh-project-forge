@@ -1,7 +1,7 @@
 {
   "name": "dsh-project-forge",
   "version": "3.0.0",
-  "description": "Project Forge — a DeepSeek Harness agent preset that keeps a project recoverable, traceable, and continuable: local-only git, four state documents, layout and naming discipline, compaction recovery, and five write guards.",
+  "description": "Project Forge — a DeepSeek Harness agent preset that keeps a project recoverable, traceable, and continuable: local-only git, four contract documents plus append-only records, layout and naming discipline, compaction recovery, and write guards that hold even when the model does not cooperate.",
   "type": "module",
   "main": "./plugin/index.js",
   "exports": {
@@ -10,7 +10,7 @@
     "./locale/*.json": "./locale/*.json",
     "./skills/*": "./skills/*"
   },
-  "files": ["cordis.patch.yml", "plugin", "skills", "locale", "icon.svg", "README.md", "docs", "LICENSE"],
+  "files": ["cordis.patch.yml", "plugin", "skills", "locale", "icon.svg", "README.md", "README.zh.md", "docs", "LICENSE"],
   "scripts": { "test": "node plugin/index.test.mjs plugin/index.js" },
   "keywords": ["dsh-plugin", "deepseek-harness", "agent-preset", "project-stewardship"],
   "license": "MIT",

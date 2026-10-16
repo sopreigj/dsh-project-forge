@@ -22,8 +22,14 @@
  * `@standard-schema/spec` import is needed either.
  */
 
-/** Default values, applied when a field is absent. */
-const DEFAULTS = Object.freeze({
+/**
+ * Default values, applied when a field is absent.
+ *
+ * Exported because it is the single source of truth for the documented defaults:
+ * `release/check-consistency.mjs` compares `docs/configuration.md` against it, so the reference
+ * table cannot drift from the code the way `digestTailLimits` once did.
+ */
+export const DEFAULTS = Object.freeze({
   protocol: true,
   recoveryProcedure: true,
   digest: true,
@@ -270,13 +276,26 @@ function normalize(raw) {
  * - `stewardFilePath` (string, default `private/steward.md`) — that file's path. A project
  *   that still keeps it at `.agents/steward.md` is read there as well, so one-shot publish
  *   grants written before the boundary existed keep working.
- * - `digestMaxBytes` (number, default 32768) — ceiling for the per-document budgets
- *   combined; it is the backstop that keeps the whole inlined block bounded.
+ * - `digestMaxBytes` (number, default 28000) — ceiling for the per-document budgets
+ *   combined; it is the backstop that keeps the whole inlined block bounded. A pure fuse:
+ *   crossing it adds a warning line and never truncates.
  * - `digestRefreshMs` (number, default 5000) — how often the digest re-reads the files.
  * - `injectOnCompaction` (boolean, default true) — fold one recovery message carrying the
  *   digest into the first step after a compaction.
  * - `recoveryMinTurnStep` (number, default 1) — earliest step of a turn that may carry the
  *   recovery message, which bounds it to one per turn.
+ * - `guardLayoutCheckpoint` (boolean, default true) — refuse a commit whose layout check was
+ *   not acknowledged.
+ * - `guardAppendOnly` (boolean, default true) — the record files may only grow.
+ * - `sizeLimitMode` (string, default `'warn'`) / `sizeHardRatio` (number, default 1.5) — what
+ *   the budgets do at commit time: `'warn'` only reports, `'ratchet'` also refuses a commit
+ *   that makes an already-over-cap document bigger.
+ * - `clockFooter` (boolean, default true) / `clockFooterThrottleMs` (number, default 600000) —
+ *   the current time rides on successful tool results, at most once per interval.
+ * - `concurrentWriteMode` (string, default `'both'`) — which shared files the claim guard
+ *   protects.
+ * All defaults are listed once, in `DEFAULTS` at the top of this file, and mirrored for users in
+ * `docs/configuration.md` — the two are compared by `release/check-consistency.mjs`.
  * - `guardLocalGit` (boolean, default true) — refuse shell commands that publish the
  *   repository or destroy local history.
  * - `guardCommitCheckpoint` (boolean, default true) — after a compaction, refuse

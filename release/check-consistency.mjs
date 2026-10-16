@@ -13,9 +13,18 @@
  *    cannot reach into the other (`cordis.patch.yml` in both points `customSkillDirs` at its own
  *    copy). The duplication is deliberate; silently letting the copies differ is not.
  *
+ * 3. A rename is not finished while a retired word survives somewhere on the public surface — the
+ *    two READMEs, a comment in the patch, the mode-picker cards and the patch row description all
+ *    kept one at different times.
+ *
+ * 4. The public docs name repository paths, and a doc that still points at a renamed or deleted
+ *    file is a stale doc — protocol §3 calls that a defect, and only a human reading it could
+ *    notice. Both inline paths (`release/check-runtime.mjs`) and relative markdown link targets
+ *    are resolved against the tree.
+ *
  * Usage: node release/check-consistency.mjs   (exit 1 on any mismatch)
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -114,9 +123,41 @@ for (const file of walk(root)) {
     });
 }
 
+// ── 4. every repository path the public docs name must exist ───────────────────
+// Two shapes are checked: an inline path whose first segment is a public top-level directory, and
+// a relative markdown link target. A line may opt out with `path-guard: allow` plus its reason —
+// for a path that belongs to the reader's project rather than to this repository.
+const PUBLIC_DOCS = [
+  'README.md',
+  'README.zh.md',
+  ...readdirSync(join(root, 'docs')).filter((name) => name.endsWith('.md')).map((name) => `docs/${name}`),
+];
+const TOP_LEVEL = ['docs', 'plugin', 'release', 'skills', 'review', 'locale'];
+const INLINE_PATH = new RegExp(`(?<![\\w./-])((?:${TOP_LEVEL.join('|')})/[\\w./-]*\\.(?:mjs|cjs|js|md|json|ya?ml|ps1))`, 'g');
+const MARKDOWN_LINK = /\]\(([^)\s]+)\)/g;
+
+let docPaths = 0;
+for (const doc of PUBLIC_DOCS) {
+  readFileSync(join(root, doc), 'utf8')
+    .split('\n')
+    .forEach((line, index) => {
+      if (line.includes('path-guard: allow')) return;
+      const candidates = [...line.matchAll(INLINE_PATH)].map((match) => match[1]);
+      for (const match of line.matchAll(MARKDOWN_LINK)) {
+        const target = match[1].split('#')[0];
+        if (target === '' || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/')) continue;
+        candidates.push(relative(root, resolve(root, dirname(doc), target)).replace(/\\/g, '/'));
+      }
+      for (const candidate of candidates) {
+        docPaths += 1;
+        if (!existsSync(join(root, candidate))) failures.push(`${doc}:${index + 1} 引用了不存在的路径 ${candidate}`);
+      }
+    });
+}
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(`✗ ${failure}`);
   console.error(`\nconsistency: ${failures.length} 处不一致`);
   process.exit(1);
 }
-console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词）`);
+console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词；文档 ${docPaths} 处路径引用真实存在）`);

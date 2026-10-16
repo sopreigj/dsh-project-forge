@@ -651,6 +651,18 @@ const PROJECT_MARKERS = {
     assert.ok(String(pushGuard(shell('git push --force-with-lease origin main', gAgent))).includes('强推'), 'force-with-lease refused');
     assert.ok(String(pushGuard(shell('git remote add upstream https://github.com/x/y.git', gAgent))).includes('仅本地'), 'remote add never covered');
 
+    // The predicate is about the *command*, not the tool that carries it: a command inside another
+    // tool's arguments (an MCP tool, say) is inspected too. Anything outside command/cmd stays out
+    // of reach, and that boundary is asserted here rather than described in prose.
+    const wrapped = (command) => ({ name: 'mcp__example__tool_invoke', arguments: { tool: 'run', command }, agent: gAgent });
+    assert.ok(String(pushGuard(wrapped('git remote add upstream https://github.com/x/y.git'))).includes('仅本地'), 'a command carried by another tool is inspected');
+    assert.equal(pushGuard(wrapped('kicad-cli pcb export step')), undefined, 'an unrelated command carried by another tool is allowed');
+    assert.equal(
+      pushGuard({ name: 'mcp__example__tool_invoke', arguments: { note: 'git remote add upstream https://github.com/x/y.git' }, agent: gAgent }),
+      undefined,
+      'a command outside command/cmd stays out of reach (documented boundary)',
+    );
+
     rmSync(repo, { recursive: true, force: true });
     console.log('one-shot push grants: OK');
   }

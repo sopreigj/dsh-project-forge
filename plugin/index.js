@@ -1204,6 +1204,24 @@ function stripQuoted(text) {
 }
 
 /**
+ * The shell command a tool call carries, if any.
+ *
+ * Every guard used to open with a check on the tool NAME (pwsh/bash), so a shell command wrapped
+ * in another tool — an MCP tool whose arguments carry a "command" field, say — was never
+ * inspected. Any tool's command/cmd argument is inspected now; stripQuoted still removes quoted
+ * spans, so prose that merely mentions a command does not deny the call.
+ * @param execution - the read-only tool execution handed to a guard.
+ * @returns the command string, or undefined when this call carries none.
+ */
+function shellCommandOf(execution) {
+  const args = execution.arguments;
+  if (args === null || typeof args !== "object") return undefined;
+  const candidate = args.command ?? args.cmd;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+}
+
+
+/**
  * Decide whether one shell command escapes the local-only git contract.
  * @param command - the command line handed to a shell tool.
  * @returns the offending label and fragment, or undefined when acceptable.
@@ -1629,8 +1647,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          const command = execution.arguments?.command;
+          const command = shellCommandOf(execution);
+          if (command === undefined) return undefined;
           const escape = localGitEscape(command);
           if (escape === undefined) return undefined;
           // A forced push rewrites published history: grants never cover it.
@@ -1677,8 +1695,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const command = shellCommandOf(execution);
+          if (!isCommitCommand(command)) return undefined;
           const agent = execution.agent;
           if (agent === undefined) return undefined;
           const state = states.get(agent.id);
@@ -1778,8 +1796,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const command = shellCommandOf(execution);
+          if (!isCommitCommand(command)) return undefined;
           const cwd = execution.agent?.session?.header?.cwd;
           if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
           const offenders = [];
@@ -1844,8 +1862,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const command = shellCommandOf(execution);
+          if (!isCommitCommand(command)) return undefined;
           const agent = execution.agent;
           if (agent === undefined) return undefined;
           const state = states.get(agent.id);
@@ -1881,8 +1899,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const command = shellCommandOf(execution);
+          if (!isCommitCommand(command)) return undefined;
           const agent = execution.agent;
           if (agent === undefined) return undefined;
           const cwd = agent.session?.header?.cwd;
@@ -1927,8 +1945,8 @@ export function apply(ctx, config) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
-          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const command = shellCommandOf(execution);
+          if (!isCommitCommand(command)) return undefined;
           const cwd = execution.agent?.session?.header?.cwd;
           if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
           const findings = scanPublicSurface(cwd, config);

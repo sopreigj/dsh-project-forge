@@ -1856,13 +1856,14 @@ export function apply(ctx, config) {
           const stale = state.compacted === true || state.unrecordedCommits;
           if (!stale) return undefined;
           return [
-            'Project Forge Mode refuses `git commit`: this is not a checkpoint of a consistent state.',
+            '项目锻造模式拒绝这次 `git commit`：这不是一个一致状态的检查点。',
             state.compacted === true
-              ? 'This session was compacted and no state document has been updated since.'
-              : 'The repository holds commits the state documents do not mention.',
-            `Update \`private/done.md\` (and \`private/todo.md\` / \`private/plan.md\` as they changed): record the current state,`,
-            'reconcile it with `git status` and `git log`, and put any mismatch in the Drift section —',
-            'then commit.',
+              ? '本会话被压缩过，此后没有任何合同文档被更新。'
+              : '仓库里有状态文档没有提到的提交。',
+            '更新 `private/done.md`（以及随之变化的 `private/todo.md` / `private/plan.md`）：记下当前状态，',
+            '与 `git status`、`git log` 对账，把不符之处写进 Drift 一节，然后再提交。',
+            '两点容易踩：**这条拒绝作用于整条命令**——把改文件与提交写在同一条 shell 调用里时，改文件根本不会执行，',
+            '请把提交单独发一条；**只有用 write/edit 工具改合同文档才算数**，用脚本改文件不算。',
           ].join(' ');
         }),
       'project-forge.commitCheckpointGuard()',

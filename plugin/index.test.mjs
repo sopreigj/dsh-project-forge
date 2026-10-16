@@ -493,7 +493,7 @@ const PROJECT_MARKERS = {
 
   const refused = commitGuard(commit(guardAgent));
   assert.equal(typeof refused, 'string', 'a post-compaction commit is refused');
-  assert.ok(refused.includes('not a checkpoint of a consistent state'), 'refusal explains why');
+  assert.ok(refused.includes('不是一个一致状态的检查点'), 'refusal explains why');
   assert.ok(refused.includes('done.md'), 'refusal names the document to update');
 
   // Writing a state document disarms it.

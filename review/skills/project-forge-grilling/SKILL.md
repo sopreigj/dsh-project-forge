@@ -25,7 +25,7 @@ Do not ask the user anything yet. Read what the project already knows:
 1. **Your runtime context** — `plan.md`, `todo.md`, `done.md`, `.agents/steward.md` and
    the repository state are inlined there every turn: the strategy, the open work, how
    the project got here, this repository's own rules, and the recent commits.
-2. `tortuous.md` from the project root — the approaches that already failed. A
+2. The negative-knowledge record `private/tortuous.jsonl` — the approaches that already failed. A
    grilling question whose answer is "we tried that, it failed for reason X" is a
    question you should not have asked.
 3. Run the state-consistency check the protocol requires before a new direction is
@@ -158,7 +158,7 @@ Only after the user explicitly says "execute" / "直接执行":
 3. Follow the checkpoint protocol from the protocol section: close a logical unit, run
    the checks, update the state documents, then one local commit with a scoped message.
    Never add a remote and never push.
-4. Record every failed approach in `tortuous.md` using the protocol's entry template,
+4. Append every failed approach to `private/tortuous.jsonl` as one record, using the protocol's
    including this one, so the next grilling session does not re-open it.
 5. Run the state-consistency check before each commit, and record any mismatch in the
    **Drift** section of `done.md`.

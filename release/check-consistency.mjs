@@ -15,8 +15,8 @@
  *
  * Usage: node release/check-consistency.mjs   (exit 1 on any mismatch)
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEFAULTS } from '../plugin/schema.js';
@@ -67,9 +67,56 @@ if (primary !== review) {
   failures.push(`${copies[0]} 与 ${copies[1]} 内容不一致——两份自包含 bundle 各带一份，必须逐字节相同`);
 }
 
+// ── 3. retired vocabulary must not come back into the public surface ───────────
+// A rename is finished only when *every* copy stopped using the old word, and this repository has
+// been bitten four times by a copy that kept it (the two READMEs, a comment in the patch, the
+// mode-picker cards, the patch row description). The check is mechanical: a retired term anywhere
+// outside the state boundary fails, unless that very line carries the marker
+// `vocabulary-guard: allow` next to a reason.
+const RETIRED = new Map([
+  ['tortuous.md', 'negative knowledge is append-only JSONL: `tortuous.jsonl`'],
+  ['journal.md', 'the work record is append-only JSONL: `journal.jsonl`'],
+  ['digestTailLimits', 'renamed to `documentBudgets` — the drift that once broke session resume'],
+  ['digestDefaultTailLimit', 'renamed to `documentBudgetDefault`'],
+  ['层级聚类', 'D11: 分层模块化 + 明确边界与依赖方向'],
+  ['层级模块架构', 'D11 rendering variant: 分层模块化 + 明确边界与依赖方向'],
+  ['layered module hierarchy', 'D11: layered modularity with explicit module boundaries'],
+]);
+const TEXT_FILE = /\.(md|json|jsonl|ya?ml|js|mjs|cjs|ts|ps1|sh|svg|txt)$/;
+const SKIP_DIR = new Set(['.git', 'node_modules', 'private']);
+const SELF = join(root, 'release', 'check-consistency.mjs');
+
+/** The public surface: the state boundary and the tool directories are not part of it. */
+function* walk(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIR.has(entry.name)) continue;
+      yield* walk(join(dir, entry.name));
+    } else {
+      yield join(dir, entry.name);
+    }
+  }
+}
+
+let scanned = 0;
+for (const file of walk(root)) {
+  if (file === SELF || !TEXT_FILE.test(file)) continue; // `SELF` is where the list itself lives
+  scanned += 1;
+  readFileSync(file, 'utf8')
+    .split('\n')
+    .forEach((line, index) => {
+      if (line.includes('vocabulary-guard: allow')) return;
+      for (const [term, reason] of RETIRED) {
+        if (line.includes(term)) {
+          failures.push(`${relative(root, file)}:${index + 1} 出现退役用词「${term}」（${reason}）`);
+        }
+      }
+    });
+}
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(`✗ ${failure}`);
   console.error(`\nconsistency: ${failures.length} 处不一致`);
   process.exit(1);
 }
-console.log(`consistency: clean（配置表 ${documented.size} 个字段与 schema 一致；内置技能两份副本一致）`);
+console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词）`);

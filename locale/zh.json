@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "项目锻造模式 Project Forge",
-    "description": "让 Agent 始终拥有一个可恢复、可追溯、可继续推进的项目状态：本地 git、四份状态文档（done/todo/tortuous/plan）、层级聚类架构、压缩恢复与状态一致性检查。"
+    "description": "让 Agent 始终拥有一个可恢复、可追溯、可继续推进的项目状态：仅本地 git、四份合同文档 + 两份只追加记录、分层模块化与明确边界、压缩恢复与状态一致性检查。"
   }
 }

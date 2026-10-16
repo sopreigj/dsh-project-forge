@@ -27,7 +27,7 @@
  *
  * Exported because it is the single source of truth for the documented defaults:
  * `release/check-consistency.mjs` compares `docs/configuration.md` against it, so the reference
- * table cannot drift from the code the way `digestTailLimits` once did.
+ * table cannot drift from the code the way `digestTailLimits` once did — vocabulary-guard: allow (naming the retired field is the point).
  */
 export const DEFAULTS = Object.freeze({
   protocol: true,

@@ -90,7 +90,7 @@ for (const [raw, why] of [
 // ── Preset patch ↔ schema drift guard ─────────────────────────────────────────
 // The preset row is the only place the Loader takes this plugin's config from. When the
 // schema renames a field and the patch is not updated (this happened on 2026-10-16:
-// `digestTailLimits` survived the v4 rename to `documentBudgets`), every session on the
+// `digestTailLimits` survived the v4 rename to `documentBudgets`), every session on the — vocabulary-guard: allow
 // preset fails to resume with `invalid config: unknown config field ...`. Validate the
 // shipped row through the same Standard Schema the Loader uses, so `npm test` catches it.
 {
@@ -366,14 +366,20 @@ const PROJECT_MARKERS = {
   plan: 'PLAN-MARK',
   todo: 'TODO-MARK',
   done: 'DONE-MARK',
-  tortuous: 'TORTUOUS-MARK',
+  // The negative-knowledge record: its headline reaches the derived index (the `conclusion` is
+  // preferred, then `title`), while its prose must never be inlined. The fixture used to write the
+  // retired `tortuous.md` — vocabulary-guard: allow (naming it says what the fixture got wrong),
+  // which the plugin never reads, so the "never inlined" assertion below
+  // passed without testing anything.
+  tortuousHeadline: 'TORTUOUS-HEADLINE-MARK',
+  tortuousProse: 'TORTUOUS-PROSE-MARK',
 };
 
 {
   writeFileSync(join(project, 'plan.md'), `# plan\n${PROJECT_MARKERS.plan}\n`);
   writeFileSync(join(project, 'todo.md'), `# todo\n${PROJECT_MARKERS.todo}\n`);
   writeFileSync(join(project, 'done.md'), `# done\n${PROJECT_MARKERS.done}\n`);
-  writeFileSync(join(project, 'tortuous.md'), `# tortuous\n${PROJECT_MARKERS.tortuous}\n`);
+  writeFileSync(join(project, 'tortuous.jsonl'), `${JSON.stringify({ id: 'T1', kind: 'route', title: PROJECT_MARKERS.tortuousHeadline, observed: PROJECT_MARKERS.tortuousProse })}\n`);
   mkdirSync(join(project, '.agents'), { recursive: true });
   writeFileSync(join(project, '.agents', 'steward.md'), '# repo rules\nSTEWARD-MARK\n');
   initRepo(project);
@@ -394,7 +400,11 @@ const PROJECT_MARKERS = {
   for (const marker of [PROJECT_MARKERS.plan, PROJECT_MARKERS.todo, PROJECT_MARKERS.done]) {
     assert.ok(text.includes(marker), `digest inlines ${marker}`);
   }
-  assert.ok(!text.includes(PROJECT_MARKERS.tortuous), 'the negative-knowledge file is never inlined');
+  assert.ok(
+    text.includes(PROJECT_MARKERS.tortuousHeadline),
+    'the negative-knowledge index carries the record headline',
+  );
+  assert.ok(!text.includes(PROJECT_MARKERS.tortuousProse), 'the record prose is never inlined');
   assert.ok(text.includes('tortuous.jsonl'), 'the digest names the read-on-demand files');
   assert.ok(text.includes('STEWARD-MARK'), 'the repository rule file is inlined');
   assert.ok(text.includes('## Repository state'), 'repository state is inlined');

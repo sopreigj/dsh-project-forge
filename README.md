@@ -83,7 +83,7 @@ dsh-project-forge/
 the tutorial (install, verify which copy is live, first takeover),
 [how-to-change-the-mode.md](docs/how-to-change-the-mode.md) shows how to change the mode itself
 (protocol text, a guard, a config field), [configuration.md](docs/configuration.md) is the reference, [state-boundary.md](docs/state-boundary.md) explains the boundary (design, export
-flow, guard coverage), and `open-sourcing.md` holds the open-sourcing notes.
+flow, guard coverage).
 
 In this development repository the state boundary `private/` is tracked by git (so state is
 recoverable) and **excluded wholesale by `release/publish.ps1`**, which is why it does not appear

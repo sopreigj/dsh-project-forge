@@ -63,7 +63,7 @@ dsh-project-forge/
 └── README.md / README.zh.md / LICENSE
 ```
 
-`docs/` 按 Diátaxis 组织，一篇只服务一种读者需求：[getting-started.md](docs/getting-started.md) 是**教程**（安装 → 确认生效副本 → 第一次接管），[how-to-change-the-mode.md](docs/how-to-change-the-mode.md) 是**操作指南**（改协议正文 / 加一个守卫 / 加一个配置字段），[configuration.md](docs/configuration.md) 是**参考**，[state-boundary.md](docs/state-boundary.md) 是**解释**（边界的设计、导出流程与守卫覆盖面），`open-sourcing.md` 是开源笔记。
+`docs/` 按 Diátaxis 组织，一篇只服务一种读者需求：[getting-started.md](docs/getting-started.md) 是**教程**（安装 → 确认生效副本 → 第一次接管），[how-to-change-the-mode.md](docs/how-to-change-the-mode.md) 是**操作指南**（改协议正文 / 加一个守卫 / 加一个配置字段），[configuration.md](docs/configuration.md) 是**参考**，[state-boundary.md](docs/state-boundary.md) 是**解释**（边界的设计、导出流程与守卫覆盖面）。
 
 本开发仓的状态边界 `private/` 纳入 git 跟踪以便回滚，但被 `release/publish.ps1` **整目录排除**，因此不会出现在公开发行版里。
 

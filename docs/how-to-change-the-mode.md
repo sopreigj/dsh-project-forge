@@ -2,7 +2,7 @@
 
 三个任务，每个都以"跑什么命令算通过"结束。命令都在本机跑过；失败的形状也照着跑过一遍（见每节末）。
 
-改完任何一处，最后都过一遍 [发布前的四门检查](#改完之后)。
+改完任何一处，最后都过一遍 [发布前的五门检查](#改完之后)。
 
 ## 改协议正文
 
@@ -99,6 +99,13 @@ node plugin/index.test.mjs plugin/index.js
 node release/check-consistency.mjs
 node release/check-preset-sync.mjs --source <dsh-checkout>
 node release/check-public-surface.mjs
+node release/check-runtime.mjs       # 无参数即可：查技能 frontmatter 与 customSkillDirs 的目标
+```
+
+装好之后想核对"生效的是哪一份副本"、某条会话日志能否解码、生效预设是不是本模式，再带上输入跑一次：
+
+```powershell
+node release/check-runtime.mjs --session <会话日志> --copy <profile>\node_modules\dsh-project-forge --self-test
 ```
 
 全过之后，镜像到发布副本并本地提交（`-NoPush` 不推远端——推送按 §1.2 要用户当次授权）：

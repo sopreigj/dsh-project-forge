@@ -74,11 +74,12 @@ node plugin/index.test.mjs plugin/index.js   # 自测：配置、digest、守卫
 node release/check-consistency.mjs           # 配置参考表 ↔ schema；技能两份副本是否一致
 node release/check-preset-sync.mjs --source <dsh-checkout>   # 本仓 preset 行 ↔ 内置 standard
 node release/check-public-surface.mjs        # 把模式自己的隐私守卫用在本仓上
+node release/check-runtime.mjs               # 技能 frontmatter + customSkillDirs 计算出的目标
 ```
 
 插件只 import Node 内建模块——profile 安装的 bundle 解析不到第三方包。`plugin/schema.js` 的手写 Standard Schema 实现了 Cordis 要求的 `~standard.validate` 接口（官方示例用 `@deepseek-ai/schemastery`，这里选手写是为了零依赖）。
 
-`release/` 放发布工具：`check-public-surface.mjs` 是上面那个检查；`check-consistency.mjs` 保证文档与那份重复的技能副本始终与各自的单一来源一致；`check-preset-sync.mjs` 把本仓 preset 的行集合与内置 `standard` 逐行比对，避免"上游加了行而我们没跟"被静默漏掉（需要 DSH 源码树：`--source <dir>` 或 `$DSH_SOURCE`，没有时干净跳过）；`publish.ps1` 在镜像前先跑**全部四项**检查，过期或坏掉的公开面会被拒绝而不是被发布。发布目录来自 `-PublicRepo` 或 `$env:FORGE_PUBLIC_REPO`，**绝不硬编码**——公开脚本里出现本机路径正是 §1.7 要禁止的。
+`release/` 放发布工具：`check-public-surface.mjs` 是上面那个检查；`check-consistency.mjs` 保证文档与那份重复的技能副本始终与各自的单一来源一致；`check-preset-sync.mjs` 把本仓 preset 的行集合与内置 `standard` 逐行比对，避免"上游加了行而我们没跟"被静默漏掉（需要 DSH 源码树：`--source <dir>` 或 `$DSH_SOURCE`，没有时干净跳过）；`publish.ps1` 在镜像前先跑**全部五项**检查，过期或坏掉的公开面会被拒绝而不是被发布。发布目录来自 `-PublicRepo` 或 `$env:FORGE_PUBLIC_REPO`，**绝不硬编码**——公开脚本里出现本机路径正是 §1.7 要禁止的。
 
 ## 边界（信任之前请读）
 

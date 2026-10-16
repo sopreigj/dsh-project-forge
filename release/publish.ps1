@@ -1,11 +1,13 @@
 # publish.ps1 — 把 dev 工作区的发布快照同步到公开仓库。
 #
 # 工作方式：
-#   1. 先跑四项检查，任一不过就拒绝发布——它们各自对应一类"静默腐烂"：
+#   1. 先跑五项检查，任一不过就拒绝发布——它们各自对应一类"静默腐烂"：
 #        · plugin/index.test.mjs     自测：配置解析、digest、全部守卫、patch↔schema 漂移
 #        · check-consistency.mjs     文档与代码：配置参考表 ↔ schema；两份技能副本逐字节相同
 #        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard（无源码树时自跳过）
 #        · check-public-surface.mjs  公开面：用本模式自己的隐私守卫检查它自己的仓库
+#        · check-runtime.mjs         运行时：内置技能的 frontmatter、customSkillDirs 计算出的目标
+#          （它还能解码会话日志、核对生效预设与"装的是哪一份"，那些要另传 --session/--copy）
 #   2. 再镜像：`private/`（状态边界：四份合同 + 记录）与 `.gitignore` 之外的全部内容
 #      复制到发布目录；发布目录自带一份忽略状态边界的 .gitignore。
 #   3. 由发布目录提交并推送（公开仓 = 干净单提交流的追加）。
@@ -31,7 +33,7 @@ if (-not $PublicRepo) {
 }
 if (-not (Test-Path "$PublicRepo\.git")) { throw "发布目录不是 git 仓库: $PublicRepo" }
 
-# 1) 发布前的四项检查。检查脚本各自返回非零表示不通过。
+# 1) 发布前的五项检查。检查脚本各自返回非零表示不通过。
 function Invoke-Check([string]$Label, [string]$Script, [string[]]$Arguments) {
   Write-Output "── $Label"
   & node $Script @Arguments
@@ -43,6 +45,7 @@ Invoke-Check '一致性（配置参考表 ↔ schema；技能副本）' "$dev\re
 $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
+Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
 
 # 2) 镜像同步：排除 .git、整个状态边界 private/、.gitignore
 #    （发布版的 .gitignore 由发布目录自己维护，内容是"忽略状态边界"）。

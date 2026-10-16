@@ -96,6 +96,7 @@ node plugin/index.test.mjs plugin/index.js   # self-test: config, digest, guards
 node release/check-consistency.mjs           # docs/configuration.md ↔ schema; the two skill copies
 node release/check-preset-sync.mjs --source <dsh-checkout>   # preset rows vs the shipped `standard`
 node release/check-public-surface.mjs        # the mode's privacy guard, applied to this repo
+node release/check-runtime.mjs               # skill frontmatter + the customSkillDirs target
 ```
 
 The plugin imports only Node builtins — profile-installed bundles resolve no third-party packages. The hand-written Standard Schema in `plugin/schema.js` implements the exact `~standard.validate` interface Cordis requires (the official docs use `@deepseek-ai/schemastery`; a hand-written schema is used here to keep the bundle dependency-free).
@@ -105,7 +106,7 @@ The plugin imports only Node builtins — profile-installed bundles resolve no t
 with their single sources, `check-preset-sync.mjs` diffs the preset's rows against the shipped
 `standard` preset so a row this mode should carry cannot be silently missed (it needs a DSH
 checkout — `--source <dir>` or `$DSH_SOURCE` — and skips cleanly without one), and `publish.ps1`
-runs **all four** checks before mirroring this tree into the public repository, so a stale or
+runs **all five** checks before mirroring this tree into the public repository, so a stale or
 broken public surface is refused rather than published. The publish directory comes from
 `-PublicRepo` or `$env:FORGE_PUBLIC_REPO`, never from a hard-coded path — a machine path in a
 public script is exactly what §1.7 forbids.

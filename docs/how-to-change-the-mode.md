@@ -55,7 +55,7 @@ if (config.guardTabs !== false && ctx.tools !== undefined) {
 
 拒绝消息里必须回答两件事：**为什么拒**，以及**用户怎么放行**（照上面那两行写）。
 
-**失败的形状**：把守卫的注册整块注释掉再跑单测，会看到
+**失败的形状**：把守卫的注册整块注释掉再跑单测，退出码 1，实测原文：
 
 ```
 AssertionError [ERR_ASSERTION]: the local-git guard is registered
@@ -80,10 +80,12 @@ node release/check-preset-sync.mjs --source <dsh-checkout>   # 本仓 patch 行�
 node plugin/index.test.mjs plugin/index.js
 ```
 
-**失败的形状**：把字段加进 `schema.js` 却忘了改 `docs/configuration.md`，第一条会指名道姓：
+**失败的形状**：把字段加进 `schema.js` 却忘了改 `docs/configuration.md`，第一条会指名道姓——下面是实测原文：
 
 ```
-✗ docs/configuration.md: 缺少 schema 里的字段 <名字>（默认 …）
+✗ docs/configuration.md 没有记载字段 tabsGuard
+
+consistency: 1 处不一致
 ```
 
 漏了第 1 步的 JSDoc 则**不会**被抓住——那一条靠自查。

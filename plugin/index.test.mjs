@@ -1,9 +1,13 @@
 /**
  * Unit check for the Project Forge mode plugin.
  *
+ * privacy-guard: allow — this file is a fixture set: it writes home paths, boundary paths and
+ * secret literals into throwaway repositories to prove what the guard refuses, so the privacy
+ * scan is deliberately not applied to it.
+ *
  * The plugin's behavior is (1) the protocol and recovery prompt sections, (2) the project
  * memory digest — documents, repository state and the repository's own rule file, (3) the
- * recovery message folded into the first post-compaction step, and (4) the two guards.
+ * recovery message folded into the first post-compaction step, and (4) the guards.
  * This file drives `apply()` against a stub Cordis context that records what was
  * registered, then asserts each layer.
  */
@@ -45,28 +49,39 @@ for (const [raw, expected] of [
   assert.equal(value.injectOnCompaction, expected.injectOnCompaction, `injectOnCompaction for ${JSON.stringify(raw)}`);
   assert.equal(value.repoStateInDigest, true, 'repoStateInDigest default');
   assert.equal(value.stewardFile, true, 'stewardFile default');
-  assert.equal(value.stewardFilePath, '.agents/steward.md', 'stewardFilePath default');
+  assert.equal(value.stewardFilePath, 'private/steward.md', 'stewardFilePath default');
+  assert.equal(value.stateDir, 'private', 'stateDir default');
   assert.equal(value.guardLocalGit, true, 'guardLocalGit default');
   assert.equal(value.guardCommitCheckpoint, true, 'guardCommitCheckpoint default');
-  assert.deepEqual(value.digestFiles, ['plan.md', 'todo.md', 'done.md'], 'digestFiles default');
+  assert.equal(value.guardPrivacyBoundary, true, 'guardPrivacyBoundary default');
+  assert.deepEqual(value.digestFiles, ['plan.md', 'done.md', 'todo.md'], 'contract documents default (least volatile first)');
   assert.deepEqual(
-    value.digestTailLimits,
-    { 'plan.md': 20000, 'todo.md': 10000, 'done.md': 20000 },
-    'per-document tail limits default',
+    value.documentBudgets,
+    { 'steward.md': 6000, 'plan.md': 15000, 'done.md': 2000, 'todo.md': 5000 },
+    'per-document budgets default',
   );
-  assert.equal(value.digestDefaultTailLimit, 20000, 'tail limit fallback');
-  assert.equal(value.digestMaxBytes, 32768, 'digestMaxBytes default');
+  assert.equal(value.documentBudgetDefault, 20000, 'budget fallback');
+  assert.equal(value.journalFile, 'journal.jsonl', 'journal file default');
+  assert.equal(value.tortuousFile, 'tortuous.jsonl', 'negative-knowledge file default');
+  assert.equal(value.journalRecoveryEntries, 5, 'recovery carries five journal entries');
+  assert.equal(value.tortuousIndexBytes, 2500, 'negative-knowledge index ceiling');
+  assert.equal(value.digestMaxBytes, 28000, 'digestMaxBytes default (fuse)');
   assert.equal(value.digestRefreshMs, 5000, 'digestRefreshMs default');
+  assert.equal(value.claimStaleMs, 600000, 'claimStaleMs default (10 minutes)');
 }
 for (const [raw, why] of [
   [{ protocol: 'yes' }, 'string for a boolean'],
   [{ nope: 1 }, 'unknown field'],
   [{ digestFiles: [1] }, 'non-string file list'],
   [{ digestMaxBytes: 0 }, 'non-positive number'],
+  [{ claimStaleMs: 0 }, 'non-positive claim window'],
   [{ stewardFilePath: '   ' }, 'blank steward path'],
-  [{ digestTailLimits: { 'plan.md': 'lots' } }, 'non-numeric per-document limit'],
-  [{ digestTailLimits: { 'plan.md': 0 } }, 'zero per-document limit'],
-  [{ digestTailLimits: { 'plan.md': -1 } }, 'negative per-document limit'],
+  [{ stateDir: '   ' }, 'blank state directory'],
+  [{ documentBudgets: { 'plan.md': 'lots' } }, 'non-numeric per-document budget'],
+  [{ documentBudgets: { 'plan.md': 0 } }, 'zero per-document budget'],
+  [{ documentBudgets: { 'plan.md': -1 } }, 'negative per-document budget'],
+  [{ journalFile: '   ' }, 'blank journal file'],
+  [{ tortuousFile: '   ' }, 'blank negative-knowledge file'],
 ]) {
   const result = standard.validate(raw);
   assert.ok(Array.isArray(result.issues) && result.issues.length > 0, `rejected: ${why}`);
@@ -124,87 +139,85 @@ function makeCtx() {
   assert.equal(record.sections[0].order, 400, 'protocol order');
   assert.equal(record.sections[1].order, 410, 'recovery order');
 
+  // §-by-§: every rule the protocol is expected to state, as it is worded now. The wording
+  // assertions are intentionally literal — they fail when a rule is silently reworded away,
+  // which is the failure mode a prompt rewrite actually has.
   for (const needle of [
-    'Persistence', 'Current state', 'Next state', 'Strategy', 'Negative knowledge',
-    'local', 'git init', 'push', 'README.md', 'docs/',
-    'checkpoint', 'feat:', 'done.md', 'todo.md', 'plan.md', 'tortuous.md',
-    '### Tried', '### Observed', '### Why it failed', '### Conclusion',
-    'layered modular hierarchy', 'explicit module boundaries', 'dependency direction',
-    'high cohesion, low coupling, minimal duplication',
-    'necessary comments only', 'explain **why**',
-    'standalone `test/` project at the project root', 'More than three test files is a trigger',
-    '.agents/steward.md', 'state consistency', 'Drift', 'complete when',
-    // §5.5–§5.6: the layout serves human readers, and every level is checked.
-    'primarily for human developers, not for the agent',
-    'your convenience must never decide the structure',
-    'The five-second test',
-    'without opening a single file',
-    'Names state meaning, not mechanism',
-    'never for when it was made',
-    'This applies at every level, not only the root',
-    'tidy lid on a messy box',
-    'Placement is part of history',
-    'Every checkpoint re-examines the layout',
-    // §6.1–§6.6: the whole tree, artifact kinds, and the single-test-file case.
-    'every directory, not only the root',
-    'A single test file is not an exemption',
-    'Different kinds of artifact never share a shelf',
-    // §8.5 / §9.8 / §10.1 / §10.4: layout is part of consistency, completion and takeover.
-    'has a **layout** row too',
-    'The layout still passes',
-    'walk the whole directory tree',
-    'Reorganizing is part of taking over, not a later cleanup',
-    // §6: naming and vocabulary.
-    'one word, one meaning, every level',
-    'navigation by lexical match is a different problem from retrieval',
-    'one defined term per concept',
-    'controlled vocabulary',
-    'One concept, one word, everywhere',
-    'The high-entropy words are the ones to fix',
-    'spread', 'is',
-    'never for when it was made',
-    'Lowercase, no spaces, no dates, no versions, no personal names',
-    'utils`, `helpers`, `common`, `shared`, `temp`, `new`, `old`, `backup`, `extra`, `stuff',
-    'specific enough that a second one like it cannot be created by accident',
-    'Plural for collections',
-    'states **what the file is**, not who wrote it',
-    'One primary concept per file',
-    'Test files mirror the thing they test',
-    'Names are phrases about the domain, not about the code',
-    'grows with the size of the scope',
-    'read as assertions',
-    'Function names say what they do to what',
-    'No encoding of noise',
-    'A recorded deviation is knowledge; an unrecorded one is rot',
-    'works at every scale',
-    'Scale does not change the rule, only the amount of it',
-    // §12: parallel sessions.
-    'Parallel sessions on one project',
-    'One document owner',
-    'commits a document change immediately',
-    'Claim before you touch a module',
-    'One vocabulary, everywhere',
-    'A spawned subagent inherits nothing',
-    'Leave the tree clean, or say so',
-    'When in doubt, stop and report',
-    // §2: task-scoped grants die with their task.
-    'A task-scoped publish grant dies with its task',
-    'remove the task-scoped',
-    'grant left behind after its task is drift',
-    'a grant left behind after its task is drift',
-    // §12.8/§12.9: subagent conventions.
-    'Two subagent modes',
-    'subagent_fork',
-    'clean room',
-    'If you are the subagent',
-    'Default to read-only exploration',
-    'Report findings as input for the parent to review',
+    // §0: the five layers and where they live.
+    '持久化', '当前状态', '下一步状态', '战略', '负知识', '工作记录', '这些文件都在状态边界内',
+    // §1: local git, the consumable grant, the boundary, the open-source surface.
+    'git init', 'push allowed:', '可消耗的许可，不是长期权限', 'guardSecrets',
+    '把公开面当作项目已经开源来写', '删掉 `private/`、复制整棵树、`git init`',
+    '可移植，无机器痕迹', '除配置外不含隐私', '示例孪生', '从第一天起就有开源卫生',
+    'README 描述这条边界约定是允许的', '不得有指向边界的悬空引用',
+    'guardPrivacyBoundary', '把本机家目录、伸手进边界的源码文件',
+    // §2: the checkpoint loop.
+    '提交是**检查点**', '检查公开面', '任务级的发布许可随任务一起死亡', 'feat:', 'docs:',
+    // §3: README versus docs.
+    '我刚拿到这个项目', '过期的文档就是缺陷', '绝不让 README 长成 docs',
+    // §4: the three classes, the warning line, and the fixed section orders.
+    '合同', '记录', '按需', '整份内联，绝不截断', '告警线，不是裁剪线', '顺序就是牺牲顺序',
+    '窗口吃**头**', '只允许在文件末尾追加', '一条记录一行', '类型标记写在记录前部',
+    'Current state', 'Verification', 'Drift', '不写"最短复现路径"', '越预算时把最旧的工作记录搬进',
+    '## 排队', '## 待验证', '## 等用户', '## 现在做', '一条一行、可开工',
+    '一次一个"当前方向"', '显式处置',
+    'journal.jsonl', 'tortuous.jsonl', 'kind', 'conclusion', 'rationale/',
+    '只记失败的探索', '绝不因为难堪',
+    // §5: layered organization and the layout rules.
+    '分层模块化层级 + 明确模块边界与依赖方向', '高内聚、低耦合、最小重复',
+    '只要必要注释', '解释 **why**',
+    '布局主要是给人类开发者看的，不是给 agent 看的', '你的方便绝不能决定结构',
+    '五秒测试', '不开任何文件就能说出', '名字表达意义，而不是机制', '绝不按产生时间命名',
+    '这条规则适用于每一层，不只顶层', '位置也是历史的一部分', '每个检查点都重新审视布局',
+    // §6: naming and the controlled vocabulary.
+    '每个名字恰好表示一件事，每件事恰好有一个名字', '受控词汇', '一个概念，一个词，处处一致',
+    '高熵词才是要修的词', '信号不是频率，是**散布**',
+    '小写、无空格、无日期、无版本号、无个人名字',
+    'misc`、`utils`、`helpers`、`common`、`shared`、`temp`、`new`、`old`、`backup`、`extra`、`stuff',
+    '不可能不小心出现第二个同类的', '集合用复数',
+    '文件名说明**这个文件是什么**', '一个文件一个主要概念', '测试文件镜像它测试的对象',
+    '名字是关于领域的词组', '长度随它可见的作用域增大', '布尔名读起来要像断言',
+    '一个名字里需要"and"的函数是两个函数', '不编码噪音',
+    '被记录的偏差是知识；没被记录的是腐烂', '读目录列表，再读文件名',
+    '尺度不改变规则，只改变数量', '趋势比任何单个名字更重要',
+    // §7: the tree, artifact kinds, tests.
+    '整棵树——每个目录，不只是根', '绝不散落在项目根',
+    '组织成项目根下的独立 `test/` 项目', '超过三个测试文件是"做这个判断"的触发信号',
+    '单个测试文件不是 §7.1 或 §5.5 的豁免', '不同种类的产物绝不共用一个架子',
+    '每一次重构都记进 `journal.jsonl`',
+    // §8 / §9 / §10: repo rules, consistency, completion.
+    '仓库可以携带自己的规则', '把这次覆盖记进 `plan.md`',
+    '发现漂移是你的工作，不是用户的', '上下文压缩之后立即', '公开面',
+    '只有以下**全部**成立，任务才算完成',
+    // §11 / §12: takeover and parallel sessions.
+    '走查整棵目录树', '提出重新分组', '并发协调靠机制，不靠手工清单',
+    '不要手工维护"在办"列表', '动手前先重读那个文件', 'claimStaleMs',
+    '单一文档主', '立即提交文档改动', 'guardConcurrentWrite',
+    'spawn 出来的子 agent 什么都不继承', '两种子 agent 模式', 'subagent_fork', '干净房间',
+    '如果你是那个子 agent', '默认只读探索', '给父方审阅的输入',
   ]) {
     assert.ok(protocol.includes(needle), `protocol mentions ${needle}`);
   }
-  for (const needle of ['plan.md', 'todo.md', 'done.md', 'tortuous.md', 'Re-state', 'consistency check']) {
+  for (const needle of ['`private/tortuous.jsonl`', '`plan.md`', '`todo.md`', '`done.md`', '状态一致性检查', 'git status']) {
     assert.ok(recovery.includes(needle), `recovery mentions ${needle}`);
   }
+  // The prompt must not carry the developer's own history: incidents, dates, session ids or a
+  // real machine path are facts about someone's machine, not rules a new agent needs. The
+  // placeholder forms the protocol uses to illustrate the rule (`C:\Users\…`, `/home/…`) end
+  // in an ellipsis and have no second segment, so they are not what these patterns match.
+  for (const leaked of [
+    /20\d\d-\d\d-\d\d/,
+    /session-[0-9a-f]{8}/,
+    /[A-Za-z]:\\[A-Za-z0-9._-]+\\[A-Za-z0-9]/,
+    /\/(?:home|Users)\/[A-Za-z0-9._-]+\//,
+  ]) {
+    assert.ok(!leaked.test(protocol), `protocol carries no developer history: ${leaked}`);
+  }
+  // A link in the protocol would be an external reference, and the protocol must stand alone
+  // (its rationale lives in the repository, not behind a URL). This says NOTHING about project
+  // content: project documents and source may link freely — they are inlined into the digest
+  // as the project's own facts, and the privacy guard deliberately allows them.
+  assert.ok(!/https?:\/\//.test(protocol), 'protocol is self-contained: no external links');
   assert.ok(!protocol.includes('{{'), 'no unrendered variables');
   console.log('sections: OK');
 }
@@ -306,14 +319,48 @@ const PROJECT_MARKERS = {
   for (const marker of [PROJECT_MARKERS.plan, PROJECT_MARKERS.todo, PROJECT_MARKERS.done]) {
     assert.ok(text.includes(marker), `digest inlines ${marker}`);
   }
-  assert.ok(!text.includes(PROJECT_MARKERS.tortuous), 'tortuous.md is never inlined');
-  assert.ok(text.includes('tortuous.md'), 'the digest names the omitted document');
+  assert.ok(!text.includes(PROJECT_MARKERS.tortuous), 'the negative-knowledge file is never inlined');
+  assert.ok(text.includes('tortuous.jsonl'), 'the digest names the read-on-demand files');
   assert.ok(text.includes('STEWARD-MARK'), 'the repository rule file is inlined');
   assert.ok(text.includes('## Repository state'), 'repository state is inlined');
   assert.ok(text.includes('branch:'), 'branch reported');
   assert.ok(text.includes('HEAD:'), 'HEAD reported');
   assert.ok(text.includes('chore: initial commit'), 'recent commit subject reported');
   console.log('digest: OK');
+
+  // ── The state boundary: documents under `private/` ───────────────────────────
+  // This fixture is the layout the protocol now asks for: everything the project keeps for
+  // itself — the four documents and the steward rules — inside one directory, and the public
+  // surface outside it. (The block above is the fallback case: documents still at the root
+  // and rules at `.agents/steward.md` are read there, so a project forged before the
+  // boundary existed keeps working.)
+  const bounded = mkdtempSync(join(tmpdir(), 'steward-boundary-'));
+  mkdirSync(join(bounded, 'private'), { recursive: true });
+  writeFileSync(join(bounded, 'private', 'plan.md'), `# plan\n${PROJECT_MARKERS.plan}\n`);
+  writeFileSync(join(bounded, 'private', 'todo.md'), `# todo\n${PROJECT_MARKERS.todo}\n`);
+  writeFileSync(join(bounded, 'private', 'done.md'), `# done\n${PROJECT_MARKERS.done}\n`);
+  writeFileSync(join(bounded, 'private', 'steward.md'), '# repo rules\nBOUNDARY-STEWARD-MARK\n');
+  writeFileSync(join(bounded, 'README.md'), '# project\n');
+  initRepo(bounded);
+
+  const { ctx: boundaryCtx, record: boundaryRecord } = makeCtx();
+  plugin.apply(boundaryCtx, standard.validate({ injectOnCompaction: false }).value);
+  const { contexts: boundaryContexts } = createdAgent(
+    boundaryRecord,
+    bounded,
+    `session-boundary-${Date.now().toString(36)}`,
+  );
+  const boundaryText = boundaryContexts[0].text({});
+  for (const marker of [PROJECT_MARKERS.plan, PROJECT_MARKERS.todo, PROJECT_MARKERS.done]) {
+    assert.ok(boundaryText.includes(marker), `the boundary digest inlines ${marker}`);
+  }
+  assert.ok(boundaryText.includes('### private/plan.md'), 'documents are labelled by their path inside the boundary');
+  assert.ok(boundaryText.includes('BOUNDARY-STEWARD-MARK'), 'the steward rules are read from inside the boundary');
+  assert.ok(boundaryText.includes('private/steward.md (this repository'), 'the rules are labelled with their path');
+  // The per-document budget is keyed by the configured name, not by the resolved path.
+  assert.ok(!boundaryText.includes('…omitted'), 'a small document is not truncated by the boundary label');
+  rmSync(bounded, { recursive: true, force: true });
+  console.log('state boundary: OK');
 
   // ── Digest braces: a document quoting {{…}} must not poison prompt assembly ───
   // dsh-system-prompt always interpolates context entries (the interpolate option
@@ -523,7 +570,7 @@ const PROJECT_MARKERS = {
     console.log('one-shot push grants: OK');
   }
 
-  // ── All five guards are switchable ───────────────────────────────────────────
+  // ── All six guards are switchable ────────────────────────────────────────────
   const { ctx: offCtx, record: offRecord } = makeCtx();
   plugin.apply(offCtx, standard.validate({
     digest: false,
@@ -532,9 +579,11 @@ const PROJECT_MARKERS = {
     guardCommitCheckpoint: false,
     guardLayoutCheckpoint: false,
     guardSecrets: false,
+    guardPrivacyBoundary: false,
     guardConcurrentWrite: false,
+    guardAppendOnly: false,
   }).value);
-  assert.equal(offRecord.guards.length, 0, 'no guards when all five are off');
+  assert.equal(offRecord.guards.length, 0, 'no guards when every guard is off');
   console.log('guard switches: OK');
 
   // ── Guard F: malformed tool-call repair ─────────────────────────────────────
@@ -615,7 +664,7 @@ const PROJECT_MARKERS = {
     console.log('malformed tool-call repair: OK');
   }
 
-  // ── Guard F switch: repair can be disabled ───────────────────────────────────
+  // ── Guard G switch: repair can be disabled ───────────────────────────────────
   {
     const { ctx: noRepairCtx, record: noRepairRecord } = makeCtx();
     plugin.apply(noRepairCtx, standard.validate({
@@ -670,7 +719,7 @@ const PROJECT_MARKERS = {
 
     // A stale claim (owner gone quiet past the staleness window) is deleted and taken over.
     const { readFileSync: rfs, writeFileSync: wfs, existsSync: exs } = await import('node:fs');
-    const claimDir = join(repo, '.agents', '.forge-claims');
+    const claimDir = join(repo, 'private', '.forge-claims');
     const doneClaim = JSON.parse(rfs(join(claimDir, 'done.md.json'), 'utf8'));
     wfs(join(claimDir, 'done.md.json'), JSON.stringify({ owner: 'session-zzz-gone-0000-000000000000', time: Date.now() - 31 * 60 * 1000 }));
     assert.equal(cwGuard({ name: 'write', arguments: { file_path: join(repo, 'done.md') }, agent: agentB }), undefined, 'B takes over a stale claim');
@@ -694,9 +743,119 @@ const PROJECT_MARKERS = {
     const claimNames = exs(claimDir) ? (await import('node:fs')).readdirSync(claimDir) : [];
     assert.ok(!claimNames.some((name) => name.includes('forge-outside')), 'no claim is created for an outside file');
 
+    // A file on ANOTHER DRIVE is the case `path.relative` cannot express: it returns the
+    // target unchanged, so the "starts with .." test alone let a scratch file under %TEMP%
+    // be claimed by a project on a different drive (real defect, 2026-10-14).
+    {
+      const { existsSync: exs2, readdirSync: rds2 } = await import('node:fs');
+      const ownDrive = tmpdir().slice(0, 1).toUpperCase();
+      const otherDrive = ['C', 'D', 'E', 'F'].find((letter) => letter !== ownDrive && exs2(`${letter}:\\`));
+      if (otherDrive === undefined) {
+        console.log('cross-drive claim check skipped (no second drive)');
+      } else {
+        const crossDrive = `${otherDrive}:\\forge-crossdrive-${Date.now().toString(36)}.py`;
+        try {
+          writeFileSync(crossDrive, 'print(0)\n');
+          assert.equal(
+            cwGuard({ name: 'write', arguments: { file_path: crossDrive }, agent: agentA }),
+            undefined,
+            'a cross-drive file is writable',
+          );
+          assert.ok(
+            !rds2(claimDir).some((name) => name.includes('forge-crossdrive')),
+            'no claim is created for a cross-drive file',
+          );
+          rmSync(crossDrive, { force: true });
+        } catch (error) {
+          console.log(`cross-drive claim check skipped (${otherDrive}: not writable: ${error.code ?? error.message})`);
+        }
+      }
+    }
+
     rmSync(repo, { recursive: true, force: true });
     rmSync(outside, { force: true });
     console.log('concurrent-write guard: OK');
+  }
+
+  // ── Parallel sessions: the in-flight view rides the digest, nothing is hand-kept ──
+  // A session may be killed at any moment (machine off, quota gone, user interrupted), so no
+  // rule may depend on it cleaning up after itself. What survives is: claims expire on their
+  // own, and "who is editing what" is DERIVED from the claim set into the digest every turn.
+  {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const repo = mkdtempSync(join(tmpdir(), 'forge-inflight-'));
+    mkdirSync(join(repo, 'private'), { recursive: true });
+    writeFileSync(join(repo, 'private', 'done.md'), '# done\n');
+    writeFileSync(join(repo, 'a.py'), 'print(1)\n');
+    initRepo(repo);
+    // A clean baseline: the guard refuses to write a file with uncommitted changes, so the
+    // first writer must be working on a committed tree.
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'chore: init'], { cwd: repo, stdio: 'pipe' });
+
+    const { ctx: ifCtx, record: ifRecord } = makeCtx();
+    plugin.apply(ifCtx, standard.validate({
+      injectOnCompaction: false,
+      digestRefreshMs: 5,
+      claimStaleMs: 1000,
+    }).value);
+    const hexA = `${Date.now().toString(16).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
+    const hexB = `${(Date.now() + 1).toString(16).padStart(8, '0')}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`;
+    const { agent: writer } = createdAgent(ifRecord, repo, `session-${hexA}`);
+    const { agent: reader, contexts: readerContexts } = createdAgent(ifRecord, repo, `session-${hexB}`);
+    const cwGuard = ifRecord.guards[ifRecord.guards.length - 1];
+    const digestOfReader = () => {
+      const context = readerContexts[0];
+      return context.text({});
+    };
+
+    // Before anyone writes: no in-flight block at all.
+    assert.ok(!digestOfReader().includes('在办认领'), 'nothing in flight → no block');
+
+    // The writer claims a file simply by writing it; the other session sees it in its digest.
+    assert.equal(
+      cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: writer }),
+      undefined,
+      'the writer may write its own file',
+    );
+    await sleep(15);
+    const seen = digestOfReader();
+    assert.ok(seen.includes('在办认领'), 'the digest gains an in-flight block');
+    assert.ok(seen.includes('`a.py`'), 'the block names the claimed file');
+    assert.ok(seen.includes(hexA.slice(0, 8)), 'the block names the owning session');
+    assert.ok(seen.includes('静默 0 分钟'), 'the block reports how long the owner has been quiet');
+    assert.ok(!seen.includes('（本会话）'), "another session's claim is not marked as my own");
+
+    // The owner's own digest marks its claim, so it knows it has work in flight.
+    const ownerText = writer.session.header.id;
+    assert.ok(ownerText.length > 0, 'sanity');
+
+    // The second session is refused while the claim is live.
+    assert.equal(
+      typeof cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: reader }),
+      'string',
+      'a live claim still blocks the second writer',
+    );
+
+    // The owner goes quiet past `claimStaleMs`: the claim is taken over and the digest says who
+    // it came from and what to do about it — a guard can only refuse or allow, never annotate.
+    writeFileSync(
+      join(repo, 'private', '.forge-claims', 'a.py.json'),
+      JSON.stringify({ owner: writer.session.header.id, time: Date.now() - 5000, path: 'a.py' }),
+    );
+    assert.equal(
+      cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: reader }),
+      undefined,
+      'an expired claim is taken over instead of blocking forever',
+    );
+    await sleep(15);
+    const afterTakeover = digestOfReader();
+    assert.ok(afterTakeover.includes('已接手'), 'the digest announces the takeover');
+    assert.ok(afterTakeover.includes(hexA.slice(0, 8)), 'the notice names the session that died');
+    assert.ok(afterTakeover.includes('先重读该文件'), 'the notice says what to do next');
+
+    rmSync(repo, { recursive: true, force: true });
+    console.log('in-flight digest: OK');
   }
 
   // ── Guard C: the layout checkpoint ───────────────────────────────────────────
@@ -809,8 +968,111 @@ const PROJECT_MARKERS = {
     assert.equal(secretsGuard(shell('git status --short', secAgent)), undefined, 'non-commit commands are untouched');
     assert.equal(secretsGuard({ name: 'read', arguments: {}, agent: secAgent }), undefined, 'other tools are untouched');
 
+    // The same file inside the state boundary is the local-only side of the project: a
+    // repository that keeps its own state may keep its own credentials there (§1.7).
+    execFileSync('git', ['rm', '--cached', '.env'], { cwd: leaky, stdio: 'pipe' });
+    mkdirSync(join(leaky, 'private'), { recursive: true });
+    writeFileSync(join(leaky, 'private', '.env'), 'API_KEY=local-only\n');
+    execFileSync('git', ['add', 'private/.env'], { cwd: leaky, stdio: 'pipe' });
+    assert.equal(
+      secretsGuard(shell('git commit -m x', secAgent)),
+      undefined,
+      'a credential file inside the boundary is allowed',
+    );
+
     rmSync(leaky, { recursive: true, force: true });
     console.log('secrets guard: OK');
+  }
+
+  // ── Guard E: the public surface stays open-source-ready ──────────────────────
+  // The export motion is "delete the state boundary, copy, `git init`", so whatever sits
+  // outside `private/` is published as-is. This guard refuses the commit that would publish
+  // machine-private material. Every other guard is off here, so the only guard that can
+  // refuse is the one under test.
+  {
+    const pub = mkdtempSync(join(tmpdir(), 'forge-privacy-'));
+    mkdirSync(join(pub, 'private'), { recursive: true });
+    writeFileSync(join(pub, 'README.md'), '# project\n');
+    writeFileSync(join(pub, 'app.py'), 'print(1)\n');
+    writeFileSync(join(pub, 'private', 'done.md'), '# done\n');
+    writeFileSync(join(pub, 'private', 'todo.md'), '# todo\n');
+    writeFileSync(join(pub, 'private', 'plan.md'), '# plan\n');
+    initRepo(pub);
+    execFileSync('git', ['add', '-A'], { cwd: pub, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'chore: init'], { cwd: pub, stdio: 'pipe' });
+
+    const { ctx: pvCtx, record: pvRecord } = makeCtx();
+    plugin.apply(pvCtx, standard.validate({
+      guardLocalGit: false,
+      guardCommitCheckpoint: false,
+      guardLayoutCheckpoint: false,
+      guardSecrets: false,
+      injectOnCompaction: false,
+    }).value);
+    const { agent: pvAgent } = createdAgent(pvRecord, pub, `session-privacy-${Date.now().toString(36)}`);
+    const commit = () => shell('git commit -m "x"', pvAgent);
+    assert.ok(pvRecord.guards.length > 0, 'the privacy guard is registered');
+    const refusalFor = () => pvRecord.guards
+      .map((guard) => guard(commit()))
+      .find((verdict) => typeof verdict === 'string');
+
+    assert.equal(refusalFor(), undefined, 'a clean public surface commits');
+
+    // 1. A home directory of the machine that wrote the file.
+    writeFileSync(join(pub, 'app.py'), 'NOTES = "C:\\Users\\someone\\project\\notes.txt"\n');
+    const homeRefusal = refusalFor();
+    assert.equal(typeof homeRefusal, 'string', 'a home path in the public surface refuses the commit');
+    assert.ok(homeRefusal.includes('app.py'), 'the refusal names the offending file');
+    assert.ok(homeRefusal.includes('home directory'), 'the refusal says what leaked');
+    writeFileSync(join(pub, 'app.py'), 'print(1)\n');
+
+    // 2. Source reaching into the state boundary: after export that path does not exist.
+    writeFileSync(join(pub, 'app.py'), `NOTES = "${'private'}/notes/session.md"\n`);
+    const reachRefusal = refusalFor();
+    assert.equal(typeof reachRefusal, 'string', 'source reaching into the boundary refuses the commit');
+    assert.ok(reachRefusal.includes('state boundary'), 'the refusal names the boundary');
+    writeFileSync(join(pub, 'app.py'), 'print(1)\n');
+
+    // 3. A high-confidence secret literal outside a configuration file.
+    writeFileSync(join(pub, 'app.py'), 'api_key = "AKIAIOSFODNN7EXAMPLE"\n');
+    const secretRefusal = refusalFor();
+    assert.equal(typeof secretRefusal, 'string', 'a secret literal in source refuses the commit');
+    assert.ok(secretRefusal.includes('configuration file'), 'the refusal points at the config-file rule');
+
+    // A configuration file is the sanctioned carrier — with an example twin for newcomers.
+    writeFileSync(join(pub, 'config.yaml'), 'api_key: "AKIAIOSFODNN7EXAMPLE"\n');
+    writeFileSync(join(pub, 'config.example.yaml'), 'api_key: "replace-me"\n');
+    writeFileSync(join(pub, 'app.py'), 'print(1)\n');
+    assert.equal(refusalFor(), undefined, 'a configuration file may carry the value');
+
+    // The boundary itself is exempt: that directory is the local-only side of the project.
+    writeFileSync(
+      join(pub, 'private', 'notes.md'),
+      'local note: C:\\Users\\someone\\project and api_key = "AKIAIOSFODNN7EXAMPLE"\n',
+    );
+    assert.equal(refusalFor(), undefined, 'files inside the boundary are not the public surface');
+
+    // A file whose whole job is to demonstrate the boundary declares the marker.
+    writeFileSync(join(pub, 'fixtures.py'), '# privacy-guard: allow — boundary fixtures\nHOME = "C:\\Users\\someone"\n');
+    assert.equal(refusalFor(), undefined, 'a file carrying the allow marker is exempt');
+
+    // Links are project content, not a privacy leak: a paper crawler's README, docs and source
+    // cite URLs all day. The guard only refuses what identifies a machine or a secret.
+    writeFileSync(
+      join(pub, 'README.md'),
+      '# paper crawler\n\nSources: https://example.org/paper/1234 and https://example.org/api/query\n',
+    );
+    writeFileSync(join(pub, 'crawler.py'), 'BASE = "https://example.org/api/query"\n');
+    assert.equal(refusalFor(), undefined, 'URLs in the public surface are allowed');
+
+    // Non-commit commands and other tools are untouched.
+    assert.equal(pvRecord.guards.map((guard) => guard(shell('git status --short', pvAgent))).find(Boolean), undefined,
+      'non-commit commands are untouched');
+    assert.equal(pvRecord.guards.map((guard) => guard({ name: 'read', arguments: {}, agent: pvAgent })).find(Boolean), undefined,
+      'other tools are untouched');
+
+    rmSync(pub, { recursive: true, force: true });
+    console.log('privacy boundary guard: OK');
   }
 
   // ── Digest configuration ─────────────────────────────────────────────────────
@@ -829,65 +1091,86 @@ const PROJECT_MARKERS = {
   assert.ok(!configured.includes('## Repository state'), 'repository state off');
   assert.ok(!configured.includes('…omitted'), 'no omission note while the budget suffices');
 
-  // ── Per-document tail budget ─────────────────────────────────────────────────
-  // A long document is inlined as its TAIL: the newest state must survive, and the
-  // omitted head has to be announced with its size. The fixture puts a unique marker
-  // only in the head, so "was the head dropped" is decidable.
+  // ── Contract documents are inlined whole, over budget or not ─────────────────
+  // The failure this replaces: a long `done.md` used to be inlined as its tail, so the head
+  // — where the current state lives — vanished silently. v4 never truncates a contract: an
+  // over-budget document is still complete, and the digest reports the overrun instead.
   const longProject = mkdtempSync(join(tmpdir(), 'steward-long-'));
   const head = `HEAD-ONLY-MARK\n${'x'.repeat(2000)}`;
   const tail = 'TAIL-MARK';
   writeFileSync(join(longProject, 'done.md'), `${head}\n${tail}\n`);
 
-  const { ctx: tailCtx, record: tailRecord } = makeCtx();
-  plugin.apply(tailCtx, standard.validate({
+  const { ctx: overCtx, record: overRecord } = makeCtx();
+  plugin.apply(overCtx, standard.validate({
     digestFiles: ['done.md'],
-    digestTailLimits: { 'done.md': 300 },
+    documentBudgets: { 'done.md': 300 },
     repoStateInDigest: false,
     stewardFile: false,
     injectOnCompaction: false,
   }).value);
-  const { contexts: tailContexts } = createdAgent(tailRecord, longProject, 'session-tail');
-  const tailText = tailContexts[0].text({});
-  assert.ok(tailText.includes('TAIL-MARK'), 'the document tail is kept');
-  assert.ok(!tailText.includes('HEAD-ONLY-MARK'), 'the document head is dropped');
-  assert.ok(tailText.includes('…omitted'), 'the omission is announced');
-  assert.ok(/omitted \d+ characters from the start/.test(tailText), 'the omitted size is reported');
-  // The budget covers the body without its "### done.md" heading.
-  const heading = '### done.md\n';
-  const bodyStart = tailText.indexOf(heading) + heading.length;
-  const bodyEnd = tailText.indexOf('\n\n`tortuous.md`', bodyStart);
-  const body = tailText.slice(bodyStart, bodyEnd === -1 ? undefined : bodyEnd);
-  assert.ok(body.trimEnd().length <= 300, `the rendered body stays inside its budget (${body.trimEnd().length})`);
+  const { contexts: overContexts } = createdAgent(overRecord, longProject, 'session-over');
+  const overText = overContexts[0].text({});
+  assert.ok(overText.includes('HEAD-ONLY-MARK'), 'an over-budget document is still complete');
+  assert.ok(overText.includes('TAIL-MARK'), 'and its tail is there too');
+  assert.ok(!overText.includes('…omitted'), 'nothing is ever truncated');
+  assert.ok(overText.includes('超出预算'), 'the overrun is reported');
+  assert.ok(/done\.md \d+\/300/.test(overText), 'the report carries the size and the budget');
+  assert.ok(overText.includes('journal.jsonl'), 'the report says where the detail should go');
 
-  // The same document under a bigger per-document budget comes through whole. The budget
-  // has to be at least the file's length, and the global ceiling has to allow it.
-  const { ctx: wholeCtx, record: wholeRecord } = makeCtx();
-  plugin.apply(wholeCtx, standard.validate({
+  // A document inside its budget gets no warning.
+  const { ctx: fitCtx, record: fitRecord } = makeCtx();
+  plugin.apply(fitCtx, standard.validate({
     digestFiles: ['done.md'],
-    digestTailLimits: { 'done.md': 8000 },
+    documentBudgets: { 'done.md': 8000 },
     repoStateInDigest: false,
     stewardFile: false,
     injectOnCompaction: false,
   }).value);
-  const { contexts: wholeContexts } = createdAgent(wholeRecord, longProject, 'session-whole');
-  const wholeText = wholeContexts[0].text({});
-  assert.ok(wholeText.includes('HEAD-ONLY-MARK'), 'a sufficient budget keeps the head');
-  assert.ok(!wholeText.includes('…omitted'), 'no omission note when nothing is omitted');
+  const { contexts: fitContexts } = createdAgent(fitRecord, longProject, 'session-fit');
+  const fitText = fitContexts[0].text({});
+  assert.ok(fitText.includes('HEAD-ONLY-MARK'), 'a document inside its budget comes through whole');
+  assert.ok(!fitText.includes('超出预算'), 'no warning while inside the budget');
 
-  // A document the map does not name uses the fallback limit.
+  // A document the map does not name uses the fallback budget — and is still whole.
   const { ctx: fbCtx, record: fbRecord } = makeCtx();
   plugin.apply(fbCtx, standard.validate({
     digestFiles: ['done.md'],
-    digestTailLimits: {},
-    digestDefaultTailLimit: 120,
+    documentBudgets: {},
+    documentBudgetDefault: 120,
     repoStateInDigest: false,
     stewardFile: false,
     injectOnCompaction: false,
   }).value);
   const { contexts: fbContexts } = createdAgent(fbRecord, longProject, 'session-fallback');
   const fbText = fbContexts[0].text({});
-  assert.ok(fbText.includes('TAIL-MARK'), 'fallback limit keeps the tail');
-  assert.ok(!fbText.includes('HEAD-MARK'), 'fallback limit drops the head');
+  assert.ok(fbText.includes('TAIL-MARK') && fbText.includes('HEAD-ONLY-MARK'), 'the fallback budget inlines whole');
+  assert.ok(fbText.includes('超出预算'), 'the fallback budget warns when exceeded');
+
+  // ── Negative knowledge: the index is inlined, the file is not ────────────────
+  // One line per record, so a model can see that a route was already disproved without
+  // carrying the whole unbounded file; the `kind` marker at the head of each record is what
+  // lets the index say which sort of entry it is.
+  writeFileSync(join(longProject, 'tortuous.jsonl'), [
+    JSON.stringify({ id: 'T1', kind: 'route', title: 'old parser', conclusion: '不要再用旧解析器' }),
+    JSON.stringify({ id: 'D1', kind: 'deviation', title: 'global install', conclusion: '不要再用全局安装' }),
+    '',
+  ].join('\n'));
+  writeFileSync(join(longProject, 'journal.jsonl'), `${JSON.stringify({ at: '2026-01-01T00:00:00Z', summary: 'JOURNAL-ONLY-MARK' })}\n`);
+  const { ctx: idxCtx, record: idxRecord } = makeCtx();
+  plugin.apply(idxCtx, standard.validate({
+    digestFiles: ['done.md'],
+    documentBudgets: { 'done.md': 8000 },
+    repoStateInDigest: false,
+    stewardFile: false,
+    injectOnCompaction: false,
+  }).value);
+  const { contexts: idxContexts } = createdAgent(idxRecord, longProject, 'session-index');
+  const idxText = idxContexts[0].text({});
+  assert.ok(idxText.includes('T1（失败路线）'), 'the index names a failed route');
+  assert.ok(idxText.includes('D1（偏差）'), 'the index names a recorded deviation');
+  assert.ok(idxText.includes('不要再用旧解析器'), 'the index carries each record conclusion');
+  assert.ok(!idxText.includes('JOURNAL-ONLY-MARK'), 'the journal is never inlined');
+  assert.ok(idxText.includes('journal.jsonl'), 'the digest names the read-on-demand files');
   rmSync(longProject, { recursive: true, force: true });
 
   // ── The protocol demands concise, current documents ──────────────────────────
@@ -897,19 +1180,96 @@ const PROJECT_MARKERS = {
     .find((section) => section.name === 'project-forge:protocol')
     .text({});
   for (const needle of [
-    'only the end of the document is inlined',
-    'The budget is a fence, not a quota',
-    'the omitted head stays safe in the file on disk',
-    'never spend steps shrinking it',
-    'Never compress a document to fit its budget',
-    'touching it is not an event',
-    'Move an item into `done.md` in the **same commit**',
-    'move it down to `todo.md`',
-    'Do not accumulate an append-only plan',
+    '整份内联，绝不截断',
+    '告警线，不是裁剪线',
+    '不要靠压缩措辞消掉告警',
+    '只允许在文件末尾追加',
+    '永不插入、永不改写、永不分小节',
+    '顺序就是牺牲顺序',
+    '越预算时把最旧的工作记录搬进 `journal.jsonl`',
+    '在**完成它的同一个提交**里把条目移出',
+    '该条目属于 `todo.md`',
+    '不要积累只增不改的计划',
   ]) {
-    assert.ok(protocolText.includes(needle), `§4 states the fence-not-quota rule: ${needle}`);
+    assert.ok(protocolText.includes(needle), `§4 states the three-class rule: ${needle}`);
   }
   console.log('digest configuration: OK');
+}
+
+// ── Guard: append-only records ────────────────────────────────────────────────
+// The two jsonl files are read as "one record per line, appended only". The guard is found by
+// what it refuses rather than by index, so another guard's opinion on the same write (the
+// concurrent-write guard also looks at `write`) cannot make this test vacuous.
+{
+  const { ctx: appendCtx, record: appendRecord } = makeCtx();
+  plugin.apply(appendCtx, standard.validate({ digest: false, injectOnCompaction: false }).value);
+  const { agent: appendAgent } = createdAgent(appendRecord, project, 'session-append');
+  const recordDir = join(project, 'private');
+  mkdirSync(recordDir, { recursive: true });
+  const recordPath = join(recordDir, 'journal.jsonl');
+  const existing = '{"id":"J1","kind":"checkpoint"}\n';
+  writeFileSync(recordPath, existing);
+  const refusalFor = (content) => appendRecord.guards
+    .map((guard) => guard({ name: 'write', arguments: { file_path: recordPath, content }, agent: appendAgent }))
+    .find((answer) => typeof answer === 'string' && answer.includes('append-only'));
+  const refusal = refusalFor('{"id":"J2","kind":"checkpoint"}\n');
+  assert.equal(typeof refusal, 'string', 'a write that drops the records already on disk is refused');
+  assert.ok(refusal.includes('journal.jsonl'), 'the refusal names the file');
+  assert.equal(
+    refusalFor(`${existing}{"id":"J2","kind":"checkpoint"}\n`),
+    undefined,
+    'the same guard allows the append — the previous text is the prefix',
+  );
+  console.log('append-only guard: OK');
+}
+
+// ── Guard: size ratchet wiring ────────────────────────────────────────────────
+// The ratchet is opt-in: the budgets are warning lines by default (the digest prints them), and
+// only `sizeLimitMode: 'ratchet'` adds the commit-time refusal. What the refusal *measures* is
+// exercised by hand against this repository, not here — see done.md.
+{
+  const { ctx: warnCtx, record: warnRecord } = makeCtx();
+  plugin.apply(warnCtx, standard.validate({ digest: false, injectOnCompaction: false }).value);
+  const { ctx: ratchetCtx, record: ratchetRecord } = makeCtx();
+  plugin.apply(ratchetCtx, standard.validate({ digest: false, injectOnCompaction: false, sizeLimitMode: 'ratchet' }).value);
+  assert.equal(
+    ratchetRecord.guards.length,
+    warnRecord.guards.length + 1,
+    'the ratchet adds exactly one guard when it is switched on',
+  );
+  assert.equal(
+    standard.validate({ sizeLimitMode: 'hard' }).issues.some((issue) => issue.path?.[0] === 'sizeLimitMode'),
+    true,
+    'an unknown sizeLimitMode is rejected by the schema',
+  );
+  console.log('size ratchet: OK');
+}
+
+// ── The clock footnote (D30) ──────────────────────────────────────────────────
+// The clock must not enter the system prompt or the digest, so it rides on tool results: one
+// footer on a successful call, nothing inside the throttle window, nothing on a failure. The
+// listener is driven directly here — what the harness does with the returned decision is its
+// own business and is covered by the tool packages' tests.
+{
+  const { ctx: clockCtx, record: clockRecord } = makeCtx();
+  plugin.apply(clockCtx, standard.validate({ digest: false, injectOnCompaction: false }).value);
+  const hook = clockRecord.listeners.find((listener) => listener.name === 'tools/post-execute');
+  assert.ok(hook !== undefined, 'the clock hook is registered on tools/post-execute');
+  const { agent: clockAgent } = createdAgent(clockRecord, project, 'session-clock');
+  const call = (result) => hook.handler(
+    { name: 'read', arguments: {}, agent: clockAgent },
+    result,
+    async () => ({ kind: 'accept' }),
+  );
+  const ok = { isError: false, content: [{ type: 'text', text: 'file contents' }] };
+  const first = await call(ok);
+  assert.equal(first.kind, 'accept', 'the decision stays an accept');
+  assert.match(first.content[0].text, /^file contents\n\n---\n⏱ \d{4}-\d\d-\d\dT/, 'the footnote carries the time and keeps the output above it');
+  const second = await call(ok);
+  assert.equal(second.content, undefined, 'a second call inside the throttle window is left alone');
+  const failed = await call({ isError: true, content: [{ type: 'text', text: 'boom' }] });
+  assert.equal(failed.content, undefined, 'a failed result is never decorated');
+  console.log('clock footnote: OK');
 }
 
 rmSync(project, { recursive: true, force: true });

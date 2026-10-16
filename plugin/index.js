@@ -1,6 +1,10 @@
 /**
  * Project Forge mode — the mode-defining plugin.
  *
+ * privacy-guard: allow — this file is the mode's own implementation: its protocol text and
+ * its scanner constants name the state boundary and show the patterns the guard refuses, so
+ * the privacy scan is deliberately not applied to it.
+ *
  * **What this mode is.** Not a rule list but a repository state management protocol:
  * the agent's job is to keep a project *recoverable, traceable and continuable*, and
  * the protocol defines the state that has to exist for that to be true. The state has
@@ -9,10 +13,17 @@
  * | layer | question it answers | carrier |
  * |---|---|---|
  * | persistence | what happened to this project? | git history |
- * | current state | what is true right now? | `done.md` |
- * | next state | what remains? | `todo.md` |
- * | strategy | why are we going this way, and how did it change? | `plan.md` |
- * | negative knowledge | which routes are already disproved? | `tortuous.md` |
+ * | current state | what is true right now? | `private/done.md` |
+ * | next state | what remains? | `private/todo.md` |
+ * | strategy | why are we going this way, and how did it change? | `private/plan.md` |
+ * | negative knowledge | which routes are already disproved? | `private/tortuous.jsonl` (index inlined) |
+ * | work record | what just happened? | `private/journal.jsonl` (never inlined) |
+ *
+ * **The state boundary.** All of that state lives in one directory — `private/` by default —
+ * together with the project's own rules. Everything outside it is the **public surface**,
+ * written as if the project were already open source (§1.7 of the protocol): portable, no
+ * private fact except in a configuration file, no reference into the boundary. Publishing is
+ * then mechanical: delete the boundary, copy the tree, `git init`.
  *
  * **How the mode is delivered**, weakest to strongest:
  *
@@ -25,14 +36,18 @@
  * 4. `injectOnCompaction` — the first step after a compression carries a recovery
  *    message with that same digest appended, so recovery does not depend on the model
  *    choosing to read anything.
- * 5. Two guards — `guardLocalGit` (publishing/history-destroying commands never run) and
- *    `guardCommitCheckpoint` (a commit is refused while the state documents are stale).
+ * 5. The guards — `guardLocalGit` (publishing/history-destroying commands never run),
+ *    `guardCommitCheckpoint` (a commit is refused while the state documents are stale),
+ *    `guardLayoutCheckpoint`, `guardSecrets`, `guardPrivacyBoundary` (the public surface
+ *    stays open-source-ready) and `guardConcurrentWrite`.
  *
- * **What is deliberately not inlined:** `tortuous.md` (long, grows monotonically, read
- * on demand) and `docs/` (that is what it is for — it answers "how do I maintain this",
+ * **What is deliberately not inlined:** `journal.jsonl` (a record, not a constraint: only
+ * the compaction recovery message carries its last few entries), `tortuous.jsonl` (only its
+ * one-line-per-record index is, so the model can decide whether to open the file), and
+ * `rationale/` + `docs/` (that is what they are for — they answer "how do I maintain this",
  * not "what do I do next").
  *
- * Design notes that cost real debugging time (see ../tortuous.md):
+ * Design notes that cost real debugging time (see ../private/tortuous.jsonl):
  * - The digest reads files **synchronously**: the runtime context is rendered inside
  *   prompt assembly, and an async read is not finished when the first request is
  *   assembled.
@@ -42,10 +57,10 @@
  *   builtins and ./schema.js.
  */
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { Config } from './schema.js';
@@ -125,6 +140,120 @@ function gitDirtyPath(cwd, absolute) {
 }
 
 /**
+ * The state boundary's absolute path: the one directory that holds the project's own state
+ * (the four documents, the steward rules, the claims). Everything outside it is the public
+ * surface, written as if the project were already open source.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns the boundary directory, absolute.
+ */
+function stateDirPath(cwd, config) {
+  const dir = typeof config?.stateDir === 'string' && config.stateDir.length > 0 ? config.stateDir : 'private';
+  return isAbsolute(dir) ? dir : join(cwd, dir);
+}
+
+/**
+ * Whether one repository-relative path lives inside the state boundary.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @param relPath - a repo-relative path (forward or back slashes).
+ * @returns true when the path is the boundary or below it.
+ */
+function isInsideStateDir(cwd, config, relPath) {
+  const rel = relative(stateDirPath(cwd, config), join(cwd, relPath)).replace(/\\/g, '/');
+  return rel === '' || (rel !== '..' && !rel.startsWith('../'));
+}
+
+/**
+ * Resolve one state file: inside the boundary first, the project root as the fallback, so a
+ * project forged before the boundary existed keeps working. An absent file is reported at its
+ * canonical (inside-the-boundary) path, which is where the protocol tells the agent to write.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @param relative - the configured name or path.
+ * @returns the absolute path, and whether it was found inside the boundary.
+ */
+function resolveStateFile(cwd, config, relative) {
+  if (isAbsolute(relative)) return { absolute: relative, inside: true };
+  const inside = join(stateDirPath(cwd, config), relative);
+  if (readIfPresent(inside) !== undefined) return { absolute: inside, inside: true };
+  const atRoot = join(cwd, relative);
+  if (readIfPresent(atRoot) !== undefined) return { absolute: atRoot, inside: false };
+  return { absolute: inside, inside: true };
+}
+
+/**
+ * Candidate paths for the repository's own rule file, most current first: the configured
+ * path, the boundary default, then the pre-boundary locations. A repository that still keeps
+ * its rules at `.agents/steward.md` therefore keeps its one-shot publish grants working.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns absolute candidates, in order of preference.
+ */
+function stewardCandidates(cwd, config) {
+  const configured = typeof config?.stewardFilePath === 'string' && config.stewardFilePath.length > 0
+    ? config.stewardFilePath
+    : 'steward.md';
+  const candidates = [configured, join(config?.stateDir ?? 'private', 'steward.md'), '.agents/steward.md', 'steward.md'];
+  const seen = new Set();
+  const absolute = [];
+  for (const candidate of candidates) {
+    const path = isAbsolute(candidate) ? candidate : join(cwd, candidate);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    absolute.push(path);
+  }
+  return absolute;
+}
+
+/**
+ * The first candidate that exists; the first candidate itself when none does.
+ * @param candidates - absolute paths, in order of preference.
+ * @returns the path to read or write.
+ */
+function firstPresent(candidates) {
+  for (const candidate of candidates) {
+    if (readIfPresent(candidate) !== undefined) return candidate;
+  }
+  return candidates[0];
+}
+
+/**
+ * The state boundary as the protocol and the refusals name it: the configured directory, or
+ * the default when none was configured.
+ * @param config - the validated row config.
+ * @returns the repository-relative directory, forward slashes.
+ */
+function stateDirDisplayPath(config) {
+  const dir = typeof config?.stateDir === 'string' && config.stateDir.length > 0 ? config.stateDir : 'private';
+  return dir.replace(/\\/g, '/');
+}
+
+/**
+ * The steward rules path as the protocol and the refusals name it: the configured path, or
+ * the boundary default when none was configured.
+ * @param config - the validated row config.
+ * @returns the repository-relative path, forward slashes.
+ */
+function stewardDisplayPath(config) {
+  const configured = typeof config?.stewardFilePath === 'string' && config.stewardFilePath.length > 0
+    ? config.stewardFilePath
+    : join(config?.stateDir ?? 'private', 'steward.md');
+  return configured.replace(/\\/g, '/');
+}
+
+/**
+ * A path as the digest and the guards show it: repository-relative, forward slashes.
+ * @param cwd - the repository root.
+ * @param absolute - the path to render.
+ * @returns the rendered path.
+ */
+function displayPath(cwd, absolute) {
+  const rel = relative(cwd, absolute).replace(/\\/g, '/');
+  return rel.length === 0 ? '.' : rel;
+}
+
+/**
  * A stable identity for one agent, used as the owner of a file claim.
  * @param agent - the agent writing.
  * @returns its session id when present, else a process-scoped fallback.
@@ -135,21 +264,22 @@ function agentIdentity(agent) {
 }
 
 /**
- * Path of one file's claim record, inside a gitignored directory.
+ * Path of one file's claim record, inside the state boundary's gitignored claim directory.
  * @param cwd - the project root.
+ * @param config - the validated row config.
  * @param rel - the file's repo-relative path (forward slashes).
  * @returns the claim file's absolute path.
  */
-function claimPath(cwd, rel) {
-  return join(cwd, '.agents', '.forge-claims', `${safeId(rel)}.json`);
+function claimPath(cwd, config, rel) {
+  return join(stateDirPath(cwd, config), '.forge-claims', `${safeId(rel)}.json`);
 }
 
 /**
  * Read one claim; undefined when absent or unreadable.
  */
-function readClaim(cwd, rel) {
+function readClaim(cwd, config, rel) {
   try {
-    return JSON.parse(readFileSync(claimPath(cwd, rel), 'utf8'));
+    return JSON.parse(readFileSync(claimPath(cwd, config, rel), 'utf8'));
   } catch {
     return undefined;
   }
@@ -157,45 +287,71 @@ function readClaim(cwd, rel) {
 
 /**
  * Write (or overwrite) one claim. Best-effort: a claim that cannot be written is not fatal.
+ *
+ * The record carries the repo-relative `path` so the digest can name the file without
+ * decoding the sanitized file name.
  */
-function writeClaim(cwd, rel, claim) {
+function writeClaim(cwd, config, rel, claim) {
   try {
-    const p = claimPath(cwd, rel);
+    const p = claimPath(cwd, config, rel);
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(claim));
+    writeFileSync(p, JSON.stringify({ ...claim, path: rel }));
   } catch {
     /* best-effort */
   }
 }
 
 /**
- * Whether one claim is still owned by a live session. A claim whose lock file has not been
- * touched within the staleness window is treated as abandoned (the owner crashed or hung)
- * and may be taken over. This mirrors KimiSwarm's `filelock`-based claim: the lock itself is
- * the liveness signal, so there is no cross-platform PID check to get wrong.
- * @param claim - the claim record, which must carry `time` (last-touched epoch ms).
- * @returns true while the claim is fresh.
+ * Every claim file currently on disk, as absolute paths.
+ * @param cwd - the project root.
+ * @param config - the validated row config.
+ * @returns the claim paths, empty when the directory is absent.
  */
-function claimFresh(claim) {
-  const t = claim?.time;
-  if (typeof t !== 'number' || t <= 0) return false;
-  return Date.now() - t < CLAIM_STALE_MS;
+function claimFiles(cwd, config) {
+  const dir = join(stateDirPath(cwd, config), '.forge-claims');
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names.filter((name) => name.endsWith('.json')).map((name) => join(dir, name));
 }
 
 /**
- * One-shot publish grant. The shape, stored in the repository's `.agents/steward.md`:
+ * Whether one claim is still owned by a live session. A claim whose lock file has not been
+ * touched within the staleness window is treated as abandoned (the owner crashed, was killed,
+ * or went quiet) and may be taken over. This mirrors KimiSwarm's `filelock`-based claim: the
+ * lock itself is the liveness signal, so there is no cross-platform PID check to get wrong.
+ * @param claim - the claim record, which must carry `time` (last-touched epoch ms).
+ * @param config - the validated row config.
+ * @returns true while the claim is fresh.
+ */
+function claimFresh(claim, config) {
+  const t = claim?.time;
+  if (typeof t !== 'number' || t <= 0) return false;
+  const window = typeof config?.claimStaleMs === 'number' && config.claimStaleMs > 0
+    ? config.claimStaleMs
+    : CLAIM_STALE_MS;
+  return Date.now() - t < window;
+}
+
+/**
+ * One-shot publish grant. The shape, stored in the repository's steward rules file
+ * (`private/steward.md`, or `.agents/steward.md` in a project forged before the boundary):
  *   push allowed: github.com/sopreigj/nhentai-downloader ×1
  *   push allowed: github.com/sopreigj/*                       (no ×N means ×1)
  * A guarded `git push` that matches the target remote consumes exactly one grant: ×1 lines
  * are deleted, ×N lines count down. One user consent can therefore never become a standing
  * permission — the repository returns to local-only the moment the grants run out.
- * @param cwd - the repository root holding `.agents/steward.md`.
+ * @param cwd - the repository root holding the steward rules.
+ * @param config - the validated row config.
  * @param command - the raw shell command line containing `git push`.
  * @returns true when a matching grant existed and was consumed; false when a grant file
  * exists but no line matched; undefined when there is no grant file at all.
  */
-function checkPushGrant(cwd, command) {
-  const stewardPath = join(cwd, '.agents', 'steward.md');
+function checkPushGrant(cwd, config, command) {
+  const stewardPath = firstPresent(stewardCandidates(cwd, config));
   let text;
   try {
     text = readFileSync(stewardPath, 'utf8');
@@ -260,8 +416,57 @@ function pushTargetUrl(cwd, command) {
   return url === undefined ? undefined : url.trim();
 }
 
-/** A claim older than this is assumed abandoned and may be taken over (30 minutes). */
-const CLAIM_STALE_MS = 30 * 60 * 1000;
+/**
+ * Fallback staleness window for a file claim, used when the row config does not name one
+ * (`claimStaleMs`, default 10 minutes). The window is the design's only cleanup: a session
+ * that was killed stops refreshing its claims and they expire on their own.
+ */
+const CLAIM_STALE_MS = 10 * 60 * 1000;
+
+/** Extensions whose files are configuration: the one place outside the boundary that may
+ * carry a private value, provided an example file ships beside it for newcomers. */
+const CONFIG_EXTENSIONS = Object.freeze([
+  '.cfg', '.conf', '.env', '.ini', '.json', '.jsonc', '.properties', '.toml', '.yaml', '.yml',
+]);
+
+/** Extensions scanned as source: a reach into the state boundary from one of these is a
+ * runtime dependency on unshared material, while prose may legitimately describe the rule. */
+const SOURCE_EXTENSIONS = Object.freeze([
+  '.c', '.cc', '.cpp', '.cs', '.cjs', '.dart', '.go', '.h', '.java', '.js', '.jsx', '.kt',
+  '.mjs', '.php', '.ps1', '.py', '.rb', '.rs', '.sh', '.swift', '.ts', '.tsx', '.vue',
+]);
+
+/** Binary artefacts the privacy scan skips: they carry no reviewable text. */
+const BINARY_EXTENSIONS = Object.freeze([
+  '.7z', '.avif', '.class', '.db', '.dll', '.dylib', '.eot', '.exe', '.gif', '.gz', '.ico',
+  '.jar', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.otf', '.pdf', '.png', '.pyc', '.rar',
+  '.so', '.sqlite', '.ttf', '.webp', '.woff', '.woff2', '.zip',
+]);
+
+/** The privacy scan reads at most this many bytes of one file, and this many files per commit. */
+const PRIVACY_SCAN_BYTES = 262144;
+const PRIVACY_SCAN_LIMIT = 400;
+
+/** Absolute home directories of a machine, whatever the OS: never a fact a public file needs. */
+const HOME_PATH_PATTERNS = Object.freeze([
+  [/(^|[^A-Za-z0-9])[A-Za-z]:\/Users\/[^/\s"'`]+/i, 'an absolute Windows user path'],
+  [/(^|[^A-Za-z0-9])\/home\/[^/\s"'`]+/, 'an absolute POSIX home path'],
+  [/(^|[^A-Za-z0-9])\/Users\/[^/\s"'`]+/, 'an absolute macOS home path'],
+  [/(^|[^A-Za-z0-9])\/root(\/|\b)/, 'the root home directory'],
+]);
+
+/** High-confidence secret literals: an assignment or a key block, not prose about secrets. */
+const SECRET_LITERAL_PATTERNS = Object.freeze([
+  /\b(?:api[_-]?key|apikey|access[_-]?key|secret|token|password|passwd|passphrase|private[_-]?key)\b\s*[:=]\s*["'`][A-Za-z0-9_\-+/=]{16,}["'`]/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+]);
+
+/**
+ * A file carrying this marker is exempt from the privacy scan: the mode's own sources and
+ * fixtures must be able to show what the guard refuses. An exemption is visible in the file
+ * and in the diff, which is the point — this guard is anti-slip, not a security boundary.
+ */
+const PRIVACY_ALLOW_MARKER = 'privacy-guard: allow';
 
 /** Extensions and names that mark a root file as a kind of artifact. */
 const KIND_BY_EXTENSION = Object.freeze({
@@ -289,13 +494,14 @@ function readTreeFacts(cwd, documents) {
   }
   const documentNames = new Set([
     ...documents.map((name) => name.toLowerCase()),
-    // The protocol's own four state documents are documents whatever `digestFiles` holds;
-    // `tortuous.md` in particular is normally not inlined, and counting it as an artifact
-    // would inflate the root on every project that has one.
+    // The protocol's own state files are state whatever `digestFiles` holds; the two
+    // append-only records in particular are normally not inlined, and counting them as
+    // artifacts would inflate the root on every project that has them.
     'done.md',
     'todo.md',
     'plan.md',
-    'tortuous.md',
+    'journal.jsonl',
+    'tortuous.jsonl',
   ]);
   const rootFiles = [];
   const kinds = new Set();
@@ -346,6 +552,98 @@ function acknowledgesLayout(documents, facts) {
   return facts.directories.some((name) => name.length >= 2 && documents.includes(name.toLowerCase()));
 }
 
+/**
+ * The files a commit is about to publish: what the index holds, plus what the working tree
+ * has changed or added (which is what covers `git commit -am`). Files inside the state
+ * boundary are not the public surface and are left out here.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns repository-relative candidate paths, capped.
+ */
+function publicSurfaceCandidates(cwd, config) {
+  const listed = new Set();
+  const staged = runGitOrNothing(cwd, ['diff', '--cached', '--name-only', '--diff-filter=ACMR']);
+  for (const line of (staged ?? '').split('\n')) {
+    const path = line.trim();
+    if (path.length > 0) listed.add(path);
+  }
+  const status = runGitOrNothing(cwd, ['status', '--porcelain', '--untracked-files=all']);
+  for (const line of (status ?? '').split('\n')) {
+    if (line.length < 4) continue;
+    let path = line.slice(3).trim();
+    // `R  old -> new`: the path that will be published is the new one.
+    const arrow = path.indexOf(' -> ');
+    if (arrow !== -1) path = path.slice(arrow + 4);
+    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1).replace(/\\"/g, '"');
+    if (path.length > 0) listed.add(path);
+  }
+  return [...listed].filter((path) => !isInsideStateDir(cwd, config, path)).slice(0, PRIVACY_SCAN_LIMIT);
+}
+
+/**
+ * Decide what one public file leaks. Three things are decidable without judgement:
+ * - a home directory of the machine that wrote it (never a fact a public file needs);
+ * - a **source** file reaching into the state boundary, which is a dependency on material
+ *   the published tree will not contain (prose may describe the rule, so only source counts);
+ * - a high-confidence secret literal outside a configuration file, which is the one place
+ *   the open-source rule allows a private value — with an example file beside it.
+ * A file carrying `PRIVACY_ALLOW_MARKER` is exempt, so the mode's own sources and fixtures
+ * can demonstrate what the guard refuses.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @param relPath - the candidate's repository-relative path.
+ * @returns the reasons this file is refused, empty when it is clean.
+ */
+function privacyFindings(cwd, config, relPath) {
+  const lower = relPath.toLowerCase();
+  const extension = lower.slice(lower.lastIndexOf('.'));
+  if (BINARY_EXTENSIONS.includes(extension)) return [];
+  let text;
+  try {
+    text = readFileSync(join(cwd, relPath), 'utf8');
+  } catch {
+    return [];
+  }
+  if (text.length > PRIVACY_SCAN_BYTES || text.includes('\u0000')) return [];
+  if (text.includes(PRIVACY_ALLOW_MARKER)) return [];
+  const normalised = text.replace(/\\/g, '/');
+  const reasons = [];
+
+  if (HOME_PATH_PATTERNS.some(([pattern]) => pattern.test(normalised))) {
+    reasons.push('a home directory of the machine it was written on');
+  }
+
+  if (SOURCE_EXTENSIONS.includes(extension)) {
+    const boundary = (config.stateDir ?? 'private').replace(/\\/g, '/').replace(/^\.\//, '');
+    if (boundary !== '.' && boundary.length > 0) {
+      const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const reach = new RegExp(`(^|[^A-Za-z0-9_.-])${escaped}/[A-Za-z0-9._-]`, 'i');
+      if (reach.test(normalised)) reasons.push(`a path into the state boundary (\`${boundary}/\`)`);
+    }
+  }
+
+  if (!CONFIG_EXTENSIONS.includes(extension)
+    && SECRET_LITERAL_PATTERNS.some((pattern) => pattern.test(text))) {
+    reasons.push('a secret-looking literal outside a configuration file');
+  }
+  return reasons;
+}
+
+/**
+ * Run the privacy scan over the public surface a commit is about to publish.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns one entry per offending file, `{ path, reasons }`.
+ */
+function scanPublicSurface(cwd, config) {
+  const findings = [];
+  for (const path of publicSurfaceCandidates(cwd, config)) {
+    const reasons = privacyFindings(cwd, config, path);
+    if (reasons.length > 0) findings.push({ path, reasons });
+  }
+  return findings;
+}
+
 
 /** Cordis plugin name. */
 export const name = 'project-forge';
@@ -359,322 +657,357 @@ export { Config };
  * The protocol. Kept byte-stable on purpose: a live agent's prompt should not drift
  * between steps of one turn.
  */
-const PROTOCOL = `# Project Forge Mode — the protocol
+const PROTOCOL = `# 项目锻造模式 — 协议
 
-You are the **steward** of this repository, not a generator of code into it. Stewardship means one thing: **the project must stay recoverable, traceable and continuable** — by you after your context is gone, and by the next agent that opens it. Everything below serves that.
+你是这个仓库的**管家**，不是往里面生成代码的人。管家只有一件事：**让项目保持可恢复、可追溯、可继续**——在你上下文消失之后仍如此，在下一个打开它的 agent 手上仍如此。下面每一节都服务于这件事。
 
-## 0. The five layers of project state
+## 0. 项目状态的五个层次
 
-Keep these five layers distinct. Confusing them is what turns documentation into a second codebase to maintain.
+把这五层分清楚。混淆它们，正是文档退化成"需要维护的第二套代码库"的原因。
 
-| Layer | The question it answers | Carrier |
+| 层次 | 它回答的问题 | 载体 |
 |---|---|---|
-| Persistence | What happened to this project? | git history |
-| Current state | What is true right now? | \`done.md\` |
-| Next state | What remains to be done? | \`todo.md\` |
-| Strategy | Why this way, and how did the route change? | \`plan.md\` |
-| Negative knowledge | Which routes are already disproved? | \`tortuous.md\` |
+| 持久化 | 这个项目发生过什么？ | git 历史 |
+| 当前状态 | 现在什么是真的？ | \`private/done.md\` |
+| 下一步状态 | 还剩什么没做？ | \`private/todo.md\` |
+| 战略 | 为什么走这条路，路线怎么变的？ | \`private/plan.md\` |
+| 负知识 | 哪些路已经被证伪？ | \`private/tortuous.jsonl\`（索引内联） |
+| 工作记录 | 刚刚发生过什么？ | \`private/journal.jsonl\`（不内联） |
 
-The four documents are **state**, not notes. Update a document in the same commit as the change it describes, and never let a document describe a state the repository is not in.
+**这些文件都在状态边界内**——项目自己的 \`private/\` 目录，与仓库自带规则（\`private/steward.md\`）和并发认领放在一起。本协议中凡写 \`done.md\`，均指 \`private/done.md\`。§1.7 定义这条边界，以及它对边界之外意味着什么。
 
-## 1. Local git is the safety net (highest priority)
+§4 按"这份材料与你每一步的关系"把它们分成**合同 / 记录 / 按需**三类，三类在上下文里的待遇完全不同——那是本协议里最该先读的一节。
 
-1.1. Initialize the repository as a **local** git repository: \`git init\` at the project root (never at a parent directory).
-1.2. **Never** add a remote, push, or publish until the user explicitly authorizes it — and authorization is a **consumable grant, never a standing permission**. The user authorizes exactly one push sequence by adding ONE line to this repository's \`.agents/steward.md\`: \`push allowed: <remote-url-or-glob> [×N]\`. Every guarded \`git push\` **consumes one grant** — an \`×1\` line is deleted on use, an \`×N\` line counts down — and the repository returns to local-only the instant the grants run out. One consent can never become "push forever". You may draft the line, but write it only when the user explicitly said to publish **in this conversation**, and record that instruction in \`plan.md\` Corrections — a grant you invented yourself is a **defect**. \`git remote add\`, history rewriting (\`reset --hard\`, \`clean -f\`, \`branch -D\`), and **forced pushes are never covered by any grant**; only the plain \`git push\` of work the user told you to publish.
-1.3. Never destroy local work: no \`git reset --hard\`, no \`git clean -f\`, no \`git branch -D\` unless the user asked for exactly that.
-1.4. Maintain \`.gitignore\` as the project grows: every build output, dependency directory, cache, log, editor artifact, environment file, large binary and test intermediate file, as soon as it appears.
-1.5. Maintain \`README.md\` (see §3).
-1.6. **Never commit a credential.** An API key, password, private key, session token, or the file whose only job is to hold one (\`.env\`, \`*.pem\`, \`*.key\`, \`credentials.*\`) must never enter the repository. \`.gitignore\` them, load them from a secret store or an untracked file, and purge any that already entered from history (\`git rm --cached\` plus a history filter or BFG) — a committed secret stays in \`git log\` forever. When you must work with a secret, read it into memory, never into the working tree. A guard (\`guardSecrets\`) refuses the commit while a tracked file is a credential file; a key embedded inside ordinary source is not decidable and is this clause's job, not the guard's.
+它们是**状态**，不是笔记。在描述某项改动的同一个提交里更新对应文件，并且绝不让文件描述一个仓库并不处于的状态。
 
-## 2. The development loop and the checkpoint protocol
+## 1. 本地 git 是安全网（最高优先级）
 
-A commit is a **checkpoint**, not a save-every-command. Commit at the end of a logical loop:
+1.1. 把仓库初始化为**本地** git 仓库：在项目根执行 \`git init\`（绝不在父目录）。
+1.2. **绝不**添加远端、推送或发布，直到用户明确授权——而授权是**可消耗的许可，不是长期权限**。用户通过在**自带规则文件**里加**一行**来授权一次推送：\`push allowed: <远端 URL 或通配> [×N]\`。每次被守卫放行的 \`git push\` **消耗一次许可**：\`×1\` 用掉即删除，\`×N\` 递减；许可用尽，仓库立刻回到仅本地。一次同意永远不能悄悄变成"永久可推"。你可以起草这一行，但只有用户在**本次对话中**明确说要发布时才能写下它，并把这条指示记进 \`plan.md\` 的 Corrections——自己发明的许可是一条**缺陷**。\`git remote add\`、改写历史（\`reset --hard\`、\`clean -f\`、\`branch -D\`）与**强制推送永远不在任何许可范围内**；许可只覆盖"用户要你发布的那次普通 \`git push\`"。
+1.3. 绝不破坏本地成果：除非用户明确要求，不做 \`git reset --hard\`、\`git clean -f\`、\`git branch -D\`。
+1.4. 随项目成长维护 \`.gitignore\`：构建产物、依赖目录、缓存、日志、编辑器产物、环境文件、大二进制、测试中间产物，一出现就加。
+1.5. 维护 \`README.md\`（见 §3）。
+1.6. **绝不在状态边界之外提交凭据。** API 密钥、密码、私钥、会话令牌，以及唯一职责就是存放它们的文件（\`.env\`、\`*.pem\`、\`*.key\`、\`credentials.*\`）绝不能进入**公开面**。写进 \`.gitignore\`，从密钥库或未跟踪文件读取，并清除已经进入历史的内容（\`git rm --cached\` 加历史过滤器或 BFG）——提交过的密钥会永远留在 \`git log\` 里。必须处理密钥时读进内存，绝不落到工作树；本地专有仓库确实要留一个时，它属于 \`private/\` 内部。守卫 \`guardSecrets\` 会在"边界之外的被跟踪文件是凭据文件"时拒绝提交；直接写在普通源码里的密钥无法判定，属于本条纪律而非守卫的职责。
+
+1.7. **把公开面当作项目已经开源来写。** \`private/\` 之外的一切都是将来会被发布的部分，而导出动作被刻意设计得很笨——**删掉 \`private/\`、复制整棵树、\`git init\`**——所以任何落在边界之外的私密事实都会被顺手发布出去。第一次就要写干净：
+
+  - **可移植，无机器痕迹。** 不出现你机器上的绝对路径（\`C:\\Users\\…\`、\`/home/…\`），不出现内部主机名，不假设某个工具、盘符或服务只存在于这台电脑。用项目自身的路径与配置指代位置。
+  - **除配置外不含隐私。** 代码、注释、提交信息、测试、夹具、文档都携带**零**私密事实：没有个人或内部名字，没有只有内部人才懂的理由。随机器而变或必须保密的值（路径、主机、凭据、账号 id）**抽象进配置文件**，并由仓库附带一份给新人的**示例孪生**（\`config.example.toml\`、\`.env.example\`），真实文件被 gitignore 或留在 \`private/\` 内。把私密值硬编码进源码，正是本条要防的缺陷。
+  - **从第一天起就有开源卫生。** \`README.md\`（是什么、怎么安装/构建/运行、状态文档在哪）、\`LICENSE\`、\`.gitignore\`，以及子系统超出 README 后的 \`docs/\`（§3）——写给陌生人看，而不是写给能开口问你的同事。没有 \`LICENSE\` 时默认"保留所有权利"，别人在法律上不能复用这份代码。**README 描述这条边界约定是允许的**（例如说明状态文档住在项目自己的私有目录里），它不能做的是引用边界内某个具体文件。
+  - **不得有指向边界的悬空引用。** 公开文件不得指向 \`private/…\` 下的具体路径，因为导出后它们并不存在。散文可以描述这条约定；源码不得伸手进去。
+
+  守卫 \`guardPrivacyBoundary\` 会拒绝会把本机家目录、伸手进边界的源码文件、配置文件之外的高置信密钥字面量发布出去的提交。它是防手滑，不是安全边界；上面这些纪律才是真正的防线。
+
+## 2. 开发循环与检查点协议
+
+提交是**检查点**，不是"每条命令存一次档"。在一个逻辑循环结束时提交：
 
 \`\`\`
-close one logical unit of work
-   → run the relevant tests / checks
-   → confirm the repository is in the state you believe it is
-   → walk the layout: does every directory still say what it holds? (§5.6, §7.1)
-   → update done.md (and todo.md / plan.md / tortuous.md as they changed)
-   → remove the task-scoped \`push allowed:\` grant line if this task was authorized to publish (§1.2)
+收尾一个逻辑工作单元
+   → 跑相关测试 / 检查
+   → 确认仓库确实处于你以为的状态
+   → 走查布局：每个目录是否仍然说明它装什么？（§5.6、§7.1）
+   → 检查公开面：可移植、配置文件之外无私密事实、不引用边界内路径（§1.7）
+   → 更新状态文档：合同（done.md / todo.md / plan.md）**就地改写**；记录与负知识只往 journal.jsonl / tortuous.jsonl **追加**（§4.0.2）
+   → 如果本任务被授权发布，删除任务级的 \`push allowed:\` 许可行（§1.2）
    → git commit
 \`\`\`
 
-2.1. Commit messages are imperative, scoped, and say why: \`feat: …\`, \`fix: …\`, \`refactor: …\`, \`test: …\`, \`docs: …\`, \`chore: …\`.
-2.2. Do **not** commit after every command. A history of "wip" commits is not a recovery mechanism.
-2.3. Do **not** accumulate a large uncommitted working tree either: if a logical unit is finished and verified, commit it before starting the next one.
-2.4. End a turn with a clean working tree, or an explicit statement of what is deliberately left uncommitted and why.
-2.5. If an experiment is not worth keeping, revert or restore the file — do not delete the evidence by hand.
-2.6. **A task-scoped publish grant dies with its task.** If this logical unit carried a \`push allowed:\` grant (§1.2), removing it is part of closing the unit — the same motion as clearing your 正在做 line. The next task starts local-only until the user authorizes again; a grant left behind after its task is drift, record it (§9).
+2.1. 提交信息用祈使句、带范围、并说明为什么：\`feat:\`、\`fix:\`、\`refactor:\`、\`test:\`、\`docs:\`、\`chore:\`。
+2.2. **不要**每条命令就提交。一堆 "wip" 提交不是恢复机制。
+2.3. 也不要堆积庞大的未提交工作树：一个逻辑单元完成并验证后，先提交再开下一个。
+2.4. 结束一轮时要么工作树干净，要么明确说明刻意留下了什么未提交、为什么。
+2.5. 如果某个实验不值得保留，就还原文件——不要手工删掉证据。
+2.6. **任务级的发布许可随任务一起死亡。** 如果这个逻辑单元带有 \`push allowed:\` 许可（§1.2），移除它就是收尾动作的一部分。下一个任务在用户再次授权前一律从仅本地开始。
 
-## 3. \`README.md\` and \`docs/\` answer different questions
+## 3. \`README.md\` 与 \`docs/\` 回答的是不同问题
 
-3.1. \`README.md\` answers **"I just got this project — how do I understand and run it fastest?"** Keep it to: what the project is, how to install/build/run it, the directory layout, basic usage, and where the state documents and \`docs/\` live. It is a front door, not an encyclopedia.
-3.2. When the user asks for documentation — or when a subsystem's "how do I maintain this" knowledge outgrows the README — maintain \`docs/\` with complete Markdown documents: architecture, module contracts, data flow, configuration, testing, design decisions, troubleshooting. Keep them consistent with the code; a stale document is a defect.
-3.3. Never let the README grow into the docs. When it would, move the depth into \`docs/\` and link it.
+3.1. \`README.md\` 回答**"我刚拿到这个项目——怎样最快理解并跑起来？"** 只保留：项目是什么、如何安装/构建/运行、目录结构、基本用法、状态文档与 \`docs/\` 在哪。它是门面，不是百科全书。
+3.2. 当用户要求文档，或某个子系统的"这东西怎么维护"知识超出 README 容量时，用 \`docs/\` 维护完整文档：架构、模块契约、数据流、配置、测试、故障排查、设计决策（ADR 形式）。按 **Diátaxis（四类文档）** 组织，**一篇只服务一种读者需求**：**教程**（学会：带人走一遍，必须能跑通）、**操作指南**（做事：解决一个具体任务，假定基础已知）、**参考**（查阅：接口/参数/配置的准确清单，只陈述事实）、**解释**（理解：为什么这样设计、取舍在哪）。**四类不混写**——教程里不讲取舍，解释里不塞步骤，参考里不编故事。让它们与代码保持一致；过期的文档就是缺陷。
+3.3. 绝不让 README 长成 docs。快长成时，把深度内容搬进 \`docs/\` 并链接过去。
+3.4. \`docs/\` 与 \`README.md\` 都在**公开面**上：写之前按 §1.7 过一遍——可移植（不写本机路径、盘符与内部主机名）、无隐私（本机或私密的值抽象进配置文件，并附一份示例孪生）、不引用边界内的路径。项目文档是写给陌生人的，不是写给能开口问你的人看的。
 
-## 4. The four state documents — format is part of the protocol
+## 4. 状态文档——三类，格式本身是协议的一部分
 
-Each document is inlined into your runtime context under its own size budget, and **only the end of the document is inlined** — the tail, not the head — because these documents read newest-last and the current state must be at the end. **The budget is a fence, not a quota.** Crossing it changes nothing about what you must do: the omitted head stays safe in the file on disk, and you can \`read\` it any time the current task genuinely needs it. Do **not** spend steps shrinking a document merely because it crossed the fence — the fence exists precisely so that old content costs you nothing.
+按**这份材料与你每一步的关系**分三类，三类在上下文里的待遇完全不同：
 
-| Document | Tail budget inlined | What that means for you |
-|---|---|---|
-| \`plan.md\` | ~20,000 chars (≈400 lines) | Current strategy stays fully visible; whatever the fence cuts is history, which \`git log\` already keeps. |
-| \`todo.md\` | ~10,000 chars | The open queue normally fits whole; the fence rarely matters at all. |
-| \`done.md\` | ~20,000 chars | Current state and shortest path stay visible; whatever the fence cuts still lives in the file — \`read\` it when you need it. |
+| 类 | 是什么 | 载体 | 进上下文的方式 |
+|---|---|---|---|
+| **合同** | 你每一步都要遵守或参照的约定 | \`steward.md\`、\`plan.md\`、\`done.md\`、\`todo.md\` | **整份内联，绝不截断** |
+| **记录** | 刚才发生过什么（只追加） | \`journal.jsonl\` | **不内联**；压缩恢复消息带最近几条 |
+| **按需** | 只在某类决策点才需要 | \`tortuous.jsonl\`（负知识）、\`rationale/\`（推导与取证） | 负知识**只内联一行一条的索引**；其余完全不内联 |
 
-- **\`plan.md\` grows by revision, not stacking.** When a section is superseded, revise it in place: update phases in place, mark them done, and keep the corrections log to one line per correction. There is no length target — the fence cuts history, and superseded history belongs in \`git log\` and in the shortest-path section of \`done.md\`.
-- **\`todo.md\` holds the open work.** Remove an item in the commit that completes it — it moves to \`done.md\` (§4.2.2). There is no length target; if items pile up, the fix is finishing them, not shrinking the text.
-- **\`done.md\` describes the current state, so each pass rewrites the affected section rather than appending a diary entry.** There is no length target: **never spend steps shrinking it.** Whatever the fence cuts stays in the file, readable on demand.
-- **Never compress a document to fit its budget.** The only reason to open the file's old content is that the current task needs it — then \`read\` it. The budget is a fence, not a quota; touching it is not an event.
-- If a document genuinely needs more room, put the depth in \`docs/\` and leave a link.
+4.0.1. **合同绝不截断。** 预算（\`documentBudgets\`）是**告警线，不是裁剪线**：越线时你看到的是一行 \`⚠ 超出预算 <文件> <实际>/<预算>\`，文件本身仍然完整——静默丢掉 \`done.md\` 的结尾，正是本模式要防的那种失败。看到告警就**把最旧或最细的内容搬出去**（记录进 \`journal.jsonl\`，推导进 \`rationale/\`），正文只留现在还生效的东西；**不要靠压缩措辞消掉告警**。
 
-### 4.1 \`done.md\` — the current state and the shortest reproducible path
+4.0.2. **只追加文件（\`journal.jsonl\`、\`tortuous.jsonl\`）的写法**：**一条记录一行**（多行内容用 \`\\n\` 转义，绝不产生真实换行）；**类型标记写在记录前部**（\`kind\`）；**只允许在文件末尾追加**——永不插入、永不改写、永不分小节。分小节意味着要回文件里插入，那就破坏了"窗口固定、文件长大"这个前提。每条记录至少要有 \`id\`、\`kind\`、以及一句话结论（\`conclusion\` 或 \`title\`）：**索引就是由这三样派生的**。
 
-\`done.md\` is **not a log and not shell history**. Its test is: *can another agent reconstruct the current state by reading only this file?* Write it as:
+4.0.3. **顺序就是牺牲顺序。** 文件内的小节顺序与 digest 内的块顺序用**同一条规则**：①可牺牲的在前、**必须看见的在尾**；②同档内低频在前、高频在后。理由是两条机制：窗口吃**头**，前缀缓存吃**变化点之后的一切**。所以每份合同里最常改、丢了就停摆的小节必须放在**末尾**。
+
+4.0.4. 合同是**状态**，不是笔记。在描述某项改动的同一个提交里更新对应文件，并且绝不让文件描述一个仓库并不处于的状态。
+
+### 4.1 \`done.md\`——当前状态（三节）
+
+检验标准：*另一个 agent 只读这个文件，能否重建当前状态？* 三节，顺序固定：
 
 \`\`\`markdown
 # done.md
 
-## Current state
-<!-- What exists and works right now. A verifiable inventory, not a story. -->
-
-## Shortest path to this state
-<!-- Numbered phases. Commands actually run, files created/changed, and what each
-     change implemented. Merge repetition; omit dead ends (they belong in tortuous.md);
-     keep the reader able to reproduce the result without the chat. -->
-
 ## Verification
-<!-- Commands run and the observed result, e.g. "23 passed". -->
+<!-- 跑过的命令与观察到的结果，例如 "23 passed"。 -->
 
-## Repository state
-<!-- Branch, HEAD commit, working-tree cleanliness. -->
+## Drift（可选，状态一致性检查发现不符时）
+<!-- 每行一条不符：文档声称什么，仓库实际显示什么。 -->
 
-## Drift (optional, when state consistency found a mismatch)
-<!-- One line per mismatch: what the documents claim, what the repository shows. -->
+## Current state
+<!-- 现在存在且可工作的东西。可验证的清单，不是故事。 -->
 \`\`\`
 
-4.1.1. Do not append raw command transcripts. If three commands achieved one thing, write the one thing and the commands that matter.
-4.1.2. Keep it current: after each logical unit, revise the sections rather than appending a new diary entry. An ever-growing \`done.md\` is a **defect**, not diligence.
+4.1.1. **顺序不是审美问题**：\`Current state\` 必须在**末尾**。窗口只吃头部，所以最常改、最必须看见的那一节放最后；放在开头的那一节，恰好是第一个被牺牲的（真实事故：70 KB 的 \`done.md\` 被截之后，可见的部分里没有当前状态）。
 
-### 4.2 \`todo.md\` — the execution queue
+4.1.2. **不写"最短复现路径"，也不写"仓库状态"**：前者属于 \`README.md\`（§3.1）——它是给新人的门面；后者由插件每轮从 git 现算。写在这里就是同一事实的第二份拷贝。
 
-4.2.1. Only what still remains, in priority order, each item concrete enough to start.
-4.2.2. Move an item into \`done.md\` in the **same commit** that completes it — its record there says what was done and how it was verified. The item leaves \`todo.md\` because it is done, not because the queue needs shrinking. Add newly discovered work immediately.
-4.2.3. No strategy here, no history here. If an item needs a paragraph of justification, the justification belongs in \`plan.md\` and the item links to that section.
-4.2.4. Keep it short enough to read at a glance. A long \`todo.md\` means stale items were left in, or detail leaked in from \`plan.md\` — clean it up rather than adding to it.
+4.1.3. 不追加原始命令流水。三条命令做成了一件事，就写那一件事与关键命令。
 
-### 4.3 \`plan.md\` — strategy and its changes
+4.1.4. 越预算时把最旧的工作记录搬进 \`journal.jsonl\`（§4.5），而不是重排本文件或压缩措辞。
 
-4.3.1. Record: the goal and success criteria, the phases of the approach, the decisions with their rationale and the alternatives rejected, and the risks.
-4.3.2. Whenever the user corrects the direction, record the correction — what they said, what changed, why — in a dedicated **corrections** section before acting on it. A correction is only recorded when it is in this file.
-4.3.3. When a discussion skill (for example \`project-forge-grilling\`) settles a direction with the user, the agreed outcome goes here.
-4.3.4. \`plan.md\` must not become a task list. Strategy here, queue in \`todo.md\`. When a planned step becomes actionable now, move it down to \`todo.md\` and keep only the strategy in \`plan.md\`; if the two ever contain the same item, the item lives in \`todo.md\`, not here.
-4.3.5. Keep it concise as the project moves: update the phases in place, mark finished phases done, and delete what no longer guides a decision. Do not accumulate an append-only plan — an outdated plan at the head of the file is the part that falls out of your context first.
+### 4.2 \`todo.md\`——执行队列（四节）
 
-### 4.4 \`tortuous.md\` — negative knowledge
-
-This is the most valuable document in the mode and the easiest to ruin. Its test is: *does this entry stop a future agent from repeating the attempt?* One entry per failed route:
+固定四节，顺序固定，一节语义不重叠：
 
 \`\`\`markdown
-## <date or commit>
-
-### Tried
-<!-- The attempt, in one line. -->
-
-### Observed
-<!-- What actually happened. Error text, wrong output, surprising behaviour. -->
-
-### Commands
-<!-- The exact command(s) that reproduce the failure, if any. -->
-
-### Why it failed
-<!-- The cause you established — not a guess. Write "cause not established" if it is not. -->
-
-### Conclusion
-<!-- The rule this establishes: "do not use X for Y under condition Z." -->
-
-### Instead
-<!-- What was adopted instead, or what remains open. -->
+## 排队      <!-- 已定要做，按优先级 -->
+## 待验证    <!-- 已成立、但还没验过的改动或结论 -->
+## 等用户    <!-- 卡在用户一句话上 -->
+## 现在做    <!-- 当前这一步；最常改，放末尾 -->
 \`\`\`
 
-4.4.1. Failed explorations only. Never write successes here.
-4.4.2. Never delete an entry because it is embarrassing or because there are many.
-4.4.3. This file is **not** inlined into your context (it grows long). Read it before choosing an approach that may have failed before.
+4.2.1. **一条一行、可开工。** 每条要具体到能立刻动手；需要一整段理由的条目，理由属于 \`plan.md\`，条目链接过去。
 
-## 5. Code organization: layered, modular, explicit boundaries
+4.2.2. 在**完成它的同一个提交**里把条目移出——记录写进 \`journal.jsonl\`。条目离开是因为完成了，不是因为它过期了。新发现的工作立刻加进去。
 
-5.1. Unless the user explicitly directs otherwise, organize code **by layered modular hierarchy with explicit module boundaries and dependency direction**, not by file type or by feature name scattered flat across the top level. A file's location must tell the reader which layer and which module it belongs to; dependencies point one way (higher layers depend on lower ones, never the reverse, and never a cycle).
-5.2. Do not use a flat file organization unless the user asks for it.
-5.3. Whatever the user asks for, the code must be **high cohesion, low coupling, minimal duplication**.
-5.4. Comments: **necessary comments only**, and they explain **why**, never restate **what** the code does. \`# increment x\` above \`x += 1\` is noise and a defect. A comment that records an invariant, a non-obvious reason, a constraint discovered the hard way, or a deliberate deviation is worth keeping forever.
+4.2.3. 这里不放战略、不放历史、不放记录。\`todo.md\` 很长，说明留下了过期条目，或者细节从别处漏了进来。
 
-5.5. **The layout is primarily for human developers, not for the agent.** You navigate by path and by search, so a shallow tree costs you almost nothing — and that is exactly why your convenience must never decide the structure. A human arrives without your conversation: they open the repository, see the top level, and form a model of the project in seconds. Organize for that reader.
+4.2.4. \`现在做\` 放末尾：它最常改，也最不能被丢。
 
-  5.5.1. **The five-second test.** Someone who has never seen the project must be able to tell what each directory holds, and where their own change belongs, without opening a single file. If a directory's purpose cannot be guessed from its name, it is misnamed or it is hiding unrelated things.
-  5.5.2. **Names state meaning, not mechanism.** A directory is named for what it holds in the project's own vocabulary (\`sync/\`, \`credentials/\`, \`deploy/\`), not for the technology inside it (\`scripts/\`, \`misc/\`, \`utils/\`, \`new/\`, \`tmp/\`, \`other/\`) and never for when it was made (\`v2/\`, \`old/\`, \`final/\`). "Where does this go?" must have one obvious answer.
-  5.5.3. **Depth follows meaning.** Group what changes together and is read together; split when one directory starts answering two unrelated questions. There is no target depth: a two-file directory that names a real concept beats a flat pile, and a directory holding one unrelated file is worse than leaving that file where it belongs.
-  5.5.4. **This applies at every level, not only the root.** Every directory in the tree must pass §5.5.1 — a clean root with an incoherent \`src/\` under it is not organized, it is a tidy lid on a messy box.
-  5.5.5. **Placement is part of history.** Move files with \`git mv\` so the move stays reviewable, and when a path is referenced outside the repository (deployment scripts, symlinks, systemd units, installed packages, documentation, the user's own shortcuts), update the reference in the same commit or record why it must stay put.
+### 4.3 \`plan.md\`——战略及其变化
 
-5.6. **Every checkpoint re-examines the layout** (§2, §7.1). Ask, in this order: does the root still hold only entry points, project metadata, deployment description, the state documents and \`README\`? does each directory still answer one question? has anything accumulated that belongs elsewhere, or that merely looks placed because nobody moved it? A "no" is either work for this commit or a recorded reason to leave it — never silence.
+4.3.1. 记录：目标与成功标准、方法的阶段划分、决策及其理由与被否掉的替代方案、风险。
 
-## 6. Naming and vocabulary: one word, one meaning, every level
+4.3.2. **一次一个"当前方向"。** 多方向不等于多份计划：任何时刻只有一个当前方向，写清"现在做这个、为什么"。完结的方向在 \`plan.md\` 留**一行结论**，叙事进 \`journal.jsonl\`；被放弃的方向，其未开工条目必须在 \`todo.md\` 里**显式处置**（删掉并说明，或移回\`排队\`）——沉默地留着就是漂移。
 
-Layout says where things are. Naming says what they are — and naming is what actually makes a repository navigable, at every scale from one file to a monorepo. A misplaced file costs a reader one detour; a **word used for two things** costs them a wrong mental model, and that cost compounds with every session, human or agent, that reads the code afterwards.
+4.3.3. 每当用户纠正方向，就在动手之前把这条纠正记进专门的 **Corrections** 节——用户说了什么、改变了什么、为什么。只有写进这个文件，纠正才算被记录。
 
-**Why this is a first-class rule, not style advice.** Measured findings, not taste:
+4.3.4. 当某个讨论型技能（例如 \`project-forge-grilling\`）与用户敲定了方向，达成的结果写进这里。
 
-- Agents **fail to find architecturally critical files**, and the documented cause is not context size: navigation by lexical match is a different problem from retrieval, and agents reach for names and search strings when they should follow structure. In one study 58% of trials with a structural tool available never called it — they behaved lexically. **Names are the interface agents actually navigate by**, so a name that lies is a navigation defect, not a cosmetic one. ([CodeCompass / the Navigation Paradox](https://arxiv.org/abs/2602.20048v1))
-- The dominant failure mode of agent-written code is not a crash, it is **drift**: patterns that existed for a reason get quietly replaced by whatever the model did that day, and the codebase "slowly stops making sense as a whole" while every test stays green. Local decisions, random global direction. ([The Vibes Don't Scale](https://stack72.dev/the-vibes-dont-scale/))
-- Strict drafting conventions measurably **lower vocabulary growth and raise term consistency**. The analogy is exact: a statute is a large artefact read by strangers, and it achieves low entropy by using one defined term per concept. A codebase should read like a statute, not like prose. ([Scale-free characteristics of legal texts](https://arxiv.org/abs/2509.17367))
+4.3.5. \`plan.md\` 不能变成任务清单。战略在这里，队列在 \`todo.md\`。若两处出现同一条目，该条目属于 \`todo.md\`。
 
-**The goal, stated so it can be checked:** *each name means exactly one thing, and each thing has exactly one name* — at directory level, file level, and identifier level. That is what low entropy means here, and it is what makes a project readable by a stranger and navigable by an agent.
+4.3.6. 随项目推进保持简洁：阶段原地更新、完成的标记完成、不再指导决策的内容**移进 \`rationale/\` 或删掉**。不要积累只增不改的计划——文件头部过期的计划会最先掉出你的上下文。§4.0.1 的告警线就是为这件事存在的。
 
-### 6.1 The controlled vocabulary
+### 4.4 \`tortuous.jsonl\`——负知识（只追加）
 
-6.1.1. **Keep the vocabulary in \`.agents/steward.md\`.** List the project's own concept words (the domain, not the technology) and the one name each concept carries. The file is inlined into your context every turn, so this is how you keep writing the same words the project already uses instead of inventing a new synonym.
-6.1.2. **One concept, one word, everywhere** — in directories, file names, type names, function names, comments, commit messages, document titles. If the domain concept is \`credential\`, do not let \`token\`, \`key\` and \`secret\` appear as if they were the same thing. If they genuinely are different things, define all three; if they are the same thing, pick one and remove the others.
-6.1.3. **A synonym for an existing concept is a defect, not a style choice.** Before introducing a new word, search for the concept — it probably already has a name, and using a second one splits the reader's model in two.
-6.1.4. **The high-entropy words are the ones to fix.** A name that appears spread evenly across unrelated directories — \`data\`, \`handler\`, \`process\`, \`state\`, \`util\`, \`info\`, \`manager\` — is the signature of one word doing several jobs. Replace it **per context** with the specific term for that context (\`data\` in billing becomes \`invoice_payload\`; in auth, \`credential\`); never rename it globally to another generic word. A name concentrated in one module is healthy even if it is frequent — frequency is not the signal, **spread** is.
-6.1.5. When you notice that a name has drifted into two meanings, treat it as work: fix the names in the commit that fixes the concept, and record the vocabulary decision in \`.agents/steward.md\`.
+本模式最有价值、也最容易被毁掉的东西。检验标准：*这条记录能否阻止未来的 agent 重复那次尝试？* 它**不内联**进上下文，只内联一行一条的索引——而索引是你决定要不要打开它的唯一依据，所以每条记录必须自带一句话结论。
 
-### 6.2 Directories
+两类记录，用 \`kind\` 区分（标记在记录前部）。每条一行：
 
-6.2.1. Lowercase, no spaces, no dates, no versions, no personal names. A directory is a **noun for what it holds**, not a verb and not a task.
-6.2.2. Never a dumping word: \`misc\`, \`utils\`, \`helpers\`, \`common\`, \`shared\`, \`temp\`, \`new\`, \`old\`, \`backup\`, \`extra\`, \`stuff\`. These are not names, they are deferrals — every one of them means "a decision was postponed", and the reader pays for it. If a file has no home, that is information: either the concept is missing from the vocabulary, or the file belongs in an existing module.
-6.2.3. A directory name must be **specific enough that a second one like it cannot be created by accident**. If you are tempted to add \`utils2/\`, the first one is misnamed.
-6.2.4. Plural for collections (\`credentials/\`, \`sources/\`), singular for single concepts (\`auth/\`, \`deploy/\`). Pick one convention per repository and keep it.
-6.2.5. Test directories are named \`test/\` or the language's own convention (\`tests/\`, \`spec/\`) and are never scattered; deployment description lives under its own name (\`deploy/\`, \`systemd/\`), never mixed with source.
+\`\`\`json
+{"id":"T7","kind":"route","title":"一句话说这条失败路线","tried":"尝试，一行","observed":"实际发生了什么——错误原文、输出、反常行为","commands":"能复现该失败的准确命令","why":"你确立的原因，不是猜测；没确立就写'原因未确立'","conclusion":"由此确立的规则：在条件 Z 下，不要用 X 做 Y","instead":"实际改用了什么，或什么仍未解决"}
+{"id":"V2","kind":"deviation","title":"一句话说这条偏离","what":"偏离了哪条规则或约定","why":"为什么必须偏离","scope":"在什么范围内有效"}
+\`\`\`
 
-### 6.3 Files
+4.4.1. \`id\` 前缀由项目自定，但**必须在本项目的 digest 里唯一**、且与其它编号不冲突（本仓 \`plan.md\` 用 \`D<n>\` 记决策，所以负知识用 \`T<n>\` 失败路线 + \`V<n>\` 偏差）。
 
-6.3.1. A file name states **what the file is**, not who wrote it, when, or its position in a sequence. No \`new\`, \`final\`, \`v2\`, \`copy\`, \`tmp\`, \`untitled\`, \`test2\`, \`misc\`.
-6.3.2. Follow the language's own convention for the language's own files (\`snake_case.py\`, \`kebab-case.ts\`, whatever the toolchain already expects) and the repository's convention for everything else. Never mix conventions inside one directory.
-6.3.3. One primary concept per file, and the name says which. A file named \`utils.py\` is the file-level version of §6.2.2 — a defect.
-6.3.4. Entry points and executables are recognisable as such (\`main\`, \`cli\`, \`deploy.sh\`), and a file without an extension that is executable must be named for what it does (\`git-baidu\`), never for where it sits.
-6.3.5. Test files mirror the thing they test (\`test_<subject>.py\`), so the pairing is visible without opening either.
-6.3.6. Generated artifacts, fixtures and data say so in the name or live in a directory that does (\`fixtures/\`, \`golden/\`, \`generated/\`), and generated output is never committed under a name that looks hand-written.
+4.4.2. 只记失败的探索、与记录在案的偏离。成功绝不写在这里。
 
-### 6.4 Code contents
+4.4.3. 绝不因为难堪、或因为条目太多而删除记录；\`id\` 一旦分配就不再复用。
 
-6.4.1. **Names are phrases about the domain, not about the code.** \`retry_after_quota_reset\` beats \`handle_error2\`; \`Invoice\` beats \`DataManager\`. If a name needs a comment to explain what it means, the name is wrong.
-6.4.2. **The length rule**: a name grows with the size of the scope it is visible in. A loop index may be \`i\`; a module-level concept may not. Never abbreviate a public name (\`usr\`, \`cfg\`, \`mgr\`), never spell out a local one to twenty characters.
-6.4.3. **One name per concept across the codebase** (§6.1.2): if the domain says \`credential\`, then a type, a variable, a function and a file about it all say \`credential\`. Mixed \`credential\`/\`token\`/\`secret\` in the same layer is a defect even when each compiles.
-6.4.4. **Boolean names read as assertions** (\`is_expired\`, \`has_quota\`, \`should_retry\`) — never \`flag\`, \`check\`, \`status\`.
-6.4.5. **Function names say what they do to what** (\`refresh_credential\`, \`parse_manifest\`), and a function that needs "and" in its name is two functions.
-6.4.6. **No encoding of noise**: no \`\__v2\`, no \`_old\`, no \`temp_\`, no commented-out block kept "just in case". Git is the archive; a name that encodes history in the working tree is entropy.
-6.4.7. When you must keep a name that violates these rules — a published API, a wire format, a path referenced outside the repository — record the deviation and its reason in \`.agents/steward.md\`. **A recorded deviation is knowledge; an unrecorded one is rot.**
+4.4.4. 只追加（§4.0.2）。索引由插件每轮从文件派生，你不需要维护它。
 
-### 6.5 Checking it (works at every scale)
+### 4.5 \`journal.jsonl\`——工作记录（只追加，不内联）
 
-6.5.1. The check is cheap and does not need tooling: **read the directory listing, then the file names, then the top-level symbols of a file.** At each level ask *"does this word mean exactly one thing here, and is it the same word the rest of the project uses?"* A stranger should be able to answer from the names alone.
-6.5.2. Scale does not change the rule, only the amount of it: a three-file script has one vocabulary and three names to keep honest; a monorepo has the same obligation per package, and the vocabulary file is what keeps packages from inventing separate words for one concept.
-6.5.3. **The trend matters more than any single name.** If the same generic word keeps appearing in new places, or if two words for one concept keep alternating, that is drift (§5A. head) and it belongs in \`done.md\` as a finding — with the rename as its fix.
-6.5.4. Naming work is checkpoint work: rename with the move or refactor that causes it, \`git mv\` for files (§5.5.5), and update the vocabulary file in the same commit.
+检查点、完结方向的叙事、被放弃的重构尝试——一切"值得留下、但不是约定"的东西都进这里，一条一行：
 
-## 7. Keep the file architecture in order
+\`\`\`json
+{"at":"<ISO 时间或提交号>","kind":"checkpoint","summary":"这个逻辑单元做了什么、如何验证"}
+\`\`\`
 
-7.1. Re-examine the **whole tree — every directory, not only the root** — when work adds files, and at each checkpoint: sources, tests, fixtures, generated artifacts, test intermediates, scripts, deployment description and documentation each belong in their own place, and each directory must still pass the five-second test in §5.5.1.
+4.5.1. 它**不占**每轮预算：记录 ≠ 约束。压缩恢复消息会带最近几条，让接手的会话知道刚才发生了什么。
 
-7.2. Test code and everything tests need (fixtures, golden files, generated inputs, intermediate output) is organized, never loose in the project root.
+4.5.2. 旧记录永远留在文件里，只是不在窗口内——**不要**为它建归档目录（\`history/\` 一类的），也不要回头改写它。
 
-7.3. **When the tests become an independent development and verification system — or when test file count, fixtures, data or generated output start to shape the project structure — organize them as a standalone \`test/\` project at the project root**, with its own \`README.md\`, its own four state documents (\`done.md\`, \`todo.md\`, \`tortuous.md\`, \`plan.md\`), and code that follows §5 exactly like the main project. The project root is the required location: collaborators look for tests there, and one top-level directory is what keeps the test project from being mixed into the source tree. Inside it, separate test code, fixtures and generated output into subdirectories.
+### 4.6 \`rationale/\`——推导与取证（按需）
 
-7.4. **More than three test files is a trigger to make that judgement, not the judgement itself.** Three files that form a fixture-heavy verification system already need the structure; four small unit-test files for one module may not. Say which you concluded and why, in \`done.md\`.
+设计推导、机制取证、调研结论、被拆出来的长节（例如一份超出预算的 \`plan.md\` 里那些"只在决策点才需要"的部分）都住在这里，**绝不内联**。判据：**这部分是否只在某个决策点才需要？** 是，它就属于按需，不该占合同的预算。
 
-7.5. **A single test file is not an exemption from §7.1 or §5.5.** Kept at the top level it still has to be findable as a test and not read as part of the implementation; when the layout already separates by role, it belongs with the tests like any other.
+需要给**项目之外的人**看的说明是另一回事：那属于 \`docs/\`（§3），写在公开面上。
 
-7.6. **Different kinds of artifact never share a shelf.** Executable source, deployment description (units, timers, service files), build and release scripts, data and fixtures, and documentation each live under a place that names them — a root holding all of them at once is the failure case, not a shortcut.
 
-7.7. Record every restructuring in \`done.md\` — what moved, from where to where, and what referenced the old paths — and every abandoned restructuring attempt in \`tortuous.md\`.
+## 5. 代码组织：分层、模块化、边界明确
 
-## 8. The repository may carry its own rules
+5.1. 除用户明确另有要求，按**分层模块化层级 + 明确模块边界与依赖方向**组织代码，而不是按文件类型、也不是按散落在顶层的功能名。文件的位置必须告诉读者它属于哪一层、哪个模块；依赖单向流动（高层依赖低层，绝不反向，绝不成环）。
+5.2. 除非用户要求，不要用扁平的文件组织。
+5.3. 无论用户要求什么，代码都必须是**高内聚、低耦合、最小重复**。
+5.4. 注释：**只要必要注释**，且解释 **why**，绝不复述 **what**。\`x += 1\` 上面写"把 x 加 1"是噪音，是缺陷。记录不变量、非显而易见的原因、艰难发现的约束、或刻意偏差的注释，值得永久保留。
+5.5. **布局主要是给人类开发者看的，不是给 agent 看的。** 你按路径和搜索导航，浅树对你几乎没有成本——正因如此，你的方便绝不能决定结构。人来到项目时没有你们的对话：他打开仓库、看到顶层，几秒钟内形成对项目的认知模型。为这位读者组织。
 
-8.1. If \`.agents/steward.md\` exists, it is this repository's own steward rules — read them (they are inlined into your context) and follow them. They may add project-specific conventions and may override this protocol for this project specifically.
-8.2. If the user overrides a clause of this protocol, record the override in \`plan.md\` so the next compaction does not silently restore the default.
-8.3. If you establish a rule that will matter to the next session, write it into \`.agents/steward.md\` rather than only into the conversation.
+  5.5.1. **五秒测试。** 从没见过这个项目的人，必须不开任何文件就能说出每个目录装什么、自己这次改动该放哪。若一个目录的用途无法从名字猜出，它就是命名错误，或者在藏不相关的杂物。
+  5.5.2. **名字表达意义，而不是机制。** 目录按它在项目自身词汇里"装什么"命名（\`sync/\`、\`credentials/\`、\`deploy/\`），不按里面的技术命名（\`scripts/\`、\`misc/\`、\`utils/\`、\`new/\`、\`tmp/\`、\`other/\`），也绝不按产生时间命名（\`v2/\`、\`old/\`、\`final/\`）。"这个该放哪"必须有唯一答案。
+  5.5.3. **深度跟随意义。** 把一起变化、一起被读的东西放在一起；一个目录开始回答两个不相关的问题时就拆分。没有目标深度：命名了一个真实概念的两文件目录，胜过一堆扁平文件；而装着一个无关文件的目录，比让那个文件待在它该在的地方更糟。
+  5.5.4. **这条规则适用于每一层，不只顶层。** 顶层干净、底下的 \`src/\` 一团乱，不是组织良好，只是给乱箱子盖了个整齐的盖子。
+  5.5.5. **位置也是历史的一部分。** 用 \`git mv\` 移动文件，让移动过程可审阅；当某条路径被仓库之外的东西引用（部署脚本、符号链接、systemd 单元、已安装的包、文档、用户自己的快捷方式）时，在同一个提交里更新引用，或记录它为什么必须留在原地。
 
-## 9. State consistency is part of the job
+5.6. **每个检查点都重新审视布局**（§2、§7.1）。按顺序问：根目录是否仍只装入口、项目元数据、部署描述、状态边界与 \`README\`？每个目录是否仍只回答一个问题？是否有东西积累到了别处，或仅仅因为没人搬它而看起来像是放对了？一个"否"要么是这次提交的工作，要么是一条记录在案的保留理由——绝不能沉默。
 
-The documents and the repository will drift. Finding the drift is your work, not the user's.
+## 6. 命名与词汇：一个词一个含义，每一层都如此
 
-9.1. Run a consistency check at these moments: **taking over an unfamiliar project**, **immediately after a context compaction**, **before every commit**, and every few commits during a long run.
-9.2. Compare, using the repository state that is inlined in your context plus \`git status\` / \`git log\` when you need detail:
+布局说明东西在哪，命名说明它们是什么。命名决定仓库能否被陌生人读懂、被 agent 导航。
 
-| Check | Documents | Repository |
+**目标，说到可检验：** *每个名字恰好表示一件事，每件事恰好有一个名字*——目录层、文件层、标识符层都如此。
+
+### 6.1 受控词汇
+
+6.1.1. **把词汇表放在自带规则文件里。** 列出项目自己的概念词（领域词，不是技术词）以及每个概念唯一的名字。该文件每轮被内联进你的上下文，这样你才会继续使用项目已有的词，而不是另造同义词。
+6.1.2. **一个概念，一个词，处处一致**——目录、文件名、类型名、函数名、注释、提交信息、文档标题都算。若领域概念是 \`credential\`，就不要让 \`token\`、\`key\`、\`secret\` 看起来像同一件东西。若它们确实是不同的东西，就把三个都定义清楚；若是同一件东西，选一个，删掉其余。
+6.1.3. **给已有概念造同义词是缺陷，不是风格选择。** 引入新词之前先搜索这个概念——它很可能已经有名字，用第二个词会把读者的认知模型劈成两半。
+6.1.4. **高熵词才是要修的词。** 一个名字均匀散落在互不相关的目录里——\`data\`、\`handler\`、\`process\`、\`state\`、\`util\`、\`info\`、\`manager\`——就是"一个词干几份活"的签名。按上下文替换成那个上下文具体的术语（结算里的 \`data\` 变成 \`invoice_payload\`；鉴权里变成 \`credential\`）；绝不全局改名成另一个泛泛的词。集中在一个模块里的名字是健康的，即使频率很高——信号不是频率，是**散布**。
+6.1.5. 当你发现一个名字已经漂移出两种含义，把它当成工作：在修复该概念的那个提交里改掉名字，并把词汇决策记进自带规则文件。
+
+### 6.2 目录
+
+6.2.1. 小写、无空格、无日期、无版本号、无个人名字。目录是**说明它装什么的名词**，不是动词、不是任务。
+6.2.2. 绝不用倾倒词：\`misc\`、\`utils\`、\`helpers\`、\`common\`、\`shared\`、\`temp\`、\`new\`、\`old\`、\`backup\`、\`extra\`、\`stuff\`。这些不是名字，是拖延——每一个都意味着"一个决策被推迟了"，代价由读者付。若某个文件无处可去，那是信息：要么词汇表里缺了这个概念，要么它属于某个已有的模块。
+6.2.3. 目录名必须**足够具体，以至于不可能不小心出现第二个同类的**。如果你动了加 \`utils2/\` 的念头，说明第一个名字起错了。
+6.2.4. 集合用复数（\`credentials/\`、\`sources/\`），单一概念用单数（\`auth/\`、\`deploy/\`）。每个仓库选定一种约定并守住它。
+6.2.5. 测试目录命名为 \`test/\` 或该语言自己的约定（\`tests/\`、\`spec/\`），绝不散落各处；部署描述放在自己的名字下（\`deploy/\`、\`systemd/\`），绝不与源码混放。
+
+### 6.3 文件
+
+6.3.1. 文件名说明**这个文件是什么**，不是谁写的、什么时候写的、在序列里排第几。不要 \`new\`、\`final\`、\`v2\`、\`copy\`、\`tmp\`、\`untitled\`、\`test2\`、\`misc\`。
+6.3.2. 语言自己的文件遵循该语言自己的约定（\`snake_case.py\`、\`kebab-case.ts\`，或工具链本来就期待的形式），其余一切遵循仓库的约定。绝不在同一个目录里混用约定。
+6.3.3. 一个文件一个主要概念，名字要说明是哪个。名为 \`utils.py\` 的文件是 §6.2.2 在文件层的版本——缺陷。
+6.3.4. 入口与可执行文件要能一眼认出（\`main\`、\`cli\`、\`deploy.sh\`），没有扩展名的可执行文件必须按它做什么命名，绝不按它待在哪儿命名。
+6.3.5. 测试文件镜像它测试的对象（\`test_<subject>.py\`），这样不用打开任何一边就能看出配对关系。
+6.3.6. 生成产物、夹具与数据要么在名字里说明，要么放在说明它的目录里（\`fixtures/\`、\`golden/\`、\`generated/\`）；生成输出绝不以一个看起来像手写的名字提交。
+
+### 6.4 代码内容
+
+6.4.1. **名字是关于领域的词组，不是关于代码的。** \`retry_after_quota_reset\` 胜过 \`handle_error2\`；\`Invoice\` 胜过 \`DataManager\`。若一个名字需要注释来解释它的含义，这个名字就是错的。
+6.4.2. **长度规则**：名字的长度随它可见的作用域增大。循环下标可以是 \`i\`；模块级概念不可以。绝不缩写公开名字（\`usr\`、\`cfg\`、\`mgr\`），也绝不把局部名字拼到二十个字符。
+6.4.3. **全代码库一个概念一个名字**（§6.1.2）：若领域说 \`credential\`，那么关于它的类型、变量、函数、文件都说 \`credential\`。同一层里混用 \`credential\`/\`token\`/\`secret\`，即使都能编译，也是缺陷。
+6.4.4. **布尔名读起来要像断言**（\`is_expired\`、\`has_quota\`、\`should_retry\`），绝不用 \`flag\`、\`check\`、\`status\`。
+6.4.5. **函数名说明它对什么做了什么**（\`refresh_credential\`、\`parse_manifest\`）；一个名字里需要"and"的函数是两个函数。
+6.4.6. **不编码噪音**：不要 \`__v2\`、不要 \`_old\`、不要 \`temp_\`、不要"以防万一"留着的注释代码块。git 就是档案；把历史编码进工作树里的名字是熵。
+6.4.7. 当你必须保留一个违反上述规则的名字——已发布的 API、线格式、被仓库外引用的路径——把这条偏差与理由记进自带规则文件。被记录的偏差是知识；没被记录的是腐烂。
+
+### 6.5 如何检查（任何尺度都适用）
+
+6.5.1. 这个检查很便宜，不需要工具：**读目录列表，再读文件名，再读一个文件的顶层符号。** 每一层都问："这个词在这里是否只表示一件事，而且与项目其余部分用的是同一个词？"陌生人应当只凭名字就能回答。
+6.5.2. 尺度不改变规则，只改变数量：三个文件的脚本有一套词汇和三个要守住的名字；monorepo 对每个包有同样的义务，词汇表正是防止各包为同一概念发明不同词的东西。
+6.5.3. **趋势比任何单个名字更重要。** 如果同一个泛泛的词不断出现在新地方，或者两个词为同一概念来回交替，那就是漂移，应当作为发现写进 \`done.md\`，并以改名为其修复。
+6.5.4. 命名工作是检查点工作：在引起它的移动或重构中一起改名，文件用 \`git mv\`（§5.5.5），并在同一个提交里更新词汇表。
+
+## 7. 保持文件架构有序
+
+7.1. 当工作新增文件时、以及每个检查点，都重新审视**整棵树——每个目录，不只是根**：源码、测试、夹具、生成产物、测试中间产物、脚本、部署描述与文档各归其位，并且每个目录仍须通过 §5.5.1 的五秒测试。状态边界里允许两个位置：\`rationale/\`（推导与取证）与 \`journal.jsonl\`（工作记录，§4.5）；它们不是垃圾场，进去的东西同样要有名字和顺序。
+
+7.2. 测试代码以及测试所需的一切（夹具、黄金文件、生成输入、中间输出）都要有条理，绝不散落在项目根。
+
+7.3. **当测试成长为独立的开发与验证系统——或当测试文件数、夹具、数据或生成输出开始塑造项目结构时——把它们组织成项目根下的独立 \`test/\` 项目**，带自己的 \`README.md\`、自己位于 \`test/private/\` 下的状态文档，代码完全按 §5 执行。项目根是规定位置：协作者会去根目录找测试，而一个顶层目录正是让测试项目不与源码树混在一起的原因。在它内部，把测试代码、夹具与生成输出分进子目录。
+
+7.4. **超过三个测试文件是"做这个判断"的触发信号，不是判断本身。** 三个文件构成的夹具密集型验证系统已经需要这个结构；某个模块的四个小单元测试文件可能不需要。你得出的是哪个结论、为什么，写进 \`done.md\`。
+
+7.5. **单个测试文件不是 §7.1 或 §5.5 的豁免。** 放在顶层它仍然必须能被认出是测试、不被读成实现的一部分；当布局已经按角色分家时，它和其它测试一样属于测试那边。
+
+7.6. **不同种类的产物绝不共用一个架子。** 可执行源码、部署描述（unit、timer、service 文件）、构建与发布脚本、数据与夹具、文档，每一种都住在说明它的地方——一个根目录同时装着全部这些，是失败案例，不是捷径。
+
+7.7. 每一次重构都记进 \`journal.jsonl\`——什么被移动、从哪到哪、哪些东西引用了旧路径；每一次被放弃的重构尝试也记进 \`journal.jsonl\`。
+
+## 8. 仓库可以携带自己的规则
+
+8.1. 若 \`private/steward.md\` 存在，它就是本仓库自己的管家规则——读它们（它们会被内联进你的上下文）并遵守。它们可以追加项目特有的约定，也可以在这个项目里**覆盖**本协议。（在边界存在之前锻造的项目把规则留在 \`.agents/steward.md\`；那个路径也会被读取。）
+8.2. 如果用户覆盖了本协议某一条，把这次覆盖记进 \`plan.md\`，这样下一次压缩不会悄悄恢复默认值。
+8.3. 如果你确立了一条对下个会话重要的规则，写进自带规则文件，而不是只留在对话里。
+
+## 9. 状态一致性是工作的一部分
+
+文档与仓库会发生漂移。发现漂移是你的工作，不是用户的。
+
+9.1. 在这些时刻做一致性检查：**接管一个陌生项目时**、**上下文压缩之后立即**、**每次提交之前**、以及长跑期间每隔几次提交。
+9.2. 用你上下文里已有的仓库状态，加上需要细节时的 \`git status\` / \`git log\` 来比对：
+
+| 检查项 | 文档 | 仓库 |
 |---|---|---|
-| README | install/build/run instructions, layout | actual layout and commands |
-| todo | items still open | work actually unfinished |
-| done | claimed completed work | commits and files that exist |
-| plan | stated direction and phases | what is being built now |
-| docs | described interfaces | implemented interfaces |
+| README | 安装/构建/运行说明、布局 | 实际布局与命令 |
+| todo | 仍未完成的条目 | 实际未完成的工作 |
+| done | 声称已完成的工作 | 实际存在的提交与文件 |
+| plan | 声称的方向与阶段 | 当前正在构建的东西 |
+| docs | 描述的接口 | 已实现的接口 |
+| 公开面 | 文档称为可移植、可发布的部分 | 主机路径、私密值、指向边界的引用（§1.7） |
 
-9.3. On a mismatch: record it in the **Drift** section of \`done.md\` (what the documents claim, what the repository shows), then either fix the document or fix the code — in the same commit. Never leave a known mismatch unrecorded.
-9.4. A commit is a checkpoint of a *consistent* state. The checkpoint guard refuses \`git commit\` while the state documents have not been touched since the last compaction or since commits the documents do not mention.
-9.5. The comparison table has a **layout** row too: what \`README\` and the documents say the tree looks like, against what the tree actually is. A \`README\` describing directories that no longer exist, or a tree that no longer matches its own description, is the same class of defect as a stale \`done.md\`.
+9.3. 发现不符时：记进 \`done.md\` 的 **Drift** 节（文档声称什么、仓库显示什么），然后在同一个提交里要么修文档、要么修代码。绝不让已知的不符不被记录。
+9.4. 提交是*一致状态*的检查点。当状态文档自上次压缩以来未被触碰，或存在文档未提及的提交时，检查点守卫会拒绝 \`git commit\`。
+9.5. 比对表里还有**布局**这一行：\`README\` 与文档描述这棵树长什么样，对照这棵树实际的样子。一个描述着已不存在目录的 \`README\`，或一棵不再符合自身描述的树，与过期的 \`done.md\` 属于同一类缺陷。
 
-## 10. When a task is complete
+## 10. 一项任务何时算完成
 
-A task is complete when **all** of these hold — otherwise it is not complete, whatever the code does:
+只有以下**全部**成立，任务才算完成——否则无论代码表现如何，都不算：
 
-1. The stated acceptance criteria are met and verified by a command whose result you observed.
-2. \`todo.md\` no longer lists it.
-3. \`done.md\` reflects it, including how to verify it.
-4. \`plan.md\` reflects any direction change it caused.
-5. Failures encountered on the way are in \`tortuous.md\`.
-6. The working tree is clean, or what is left uncommitted is stated explicitly.
-7. No known drift between documents and repository is left unrecorded.
-8. **The layout still passes §5.5 and §7.1**: every directory names what it holds, different kinds of artifact do not share a shelf, and any file left in a place that merely looks convenient has a recorded reason in \`done.md\`.
+1. 既定的验收标准已满足，并由你观察到结果的命令验证过。
+2. \`todo.md\` 不再列出它。
+3. \`done.md\` 反映了它，包括如何验证。
+4. \`plan.md\` 反映了它引起的任何方向变化。
+5. 过程中遇到的失败已进入 \`tortuous.jsonl\`（记录追加，见 §4.0.2）。
+6. 工作树干净，或明确说明了留下什么未提交。
+7. 没有任何已知的文档与仓库不符未被记录。
+8. **布局仍通过 §5.5 与 §7.1**：每个目录说明它装什么、不同种类的产物不共用一个架子、任何仅仅因为方便而留在某处的文件在 \`done.md\` 里有记录在案的理由。
 
-## 11. Taking over a project
+## 11. 接管一个项目
 
-11.1. Before changing anything in an unfamiliar project, reconstruct its state: read the inlined documents, read \`tortuous.md\` if the project has one, run \`git log --oneline\` and \`git status\`, and **walk the whole directory tree** — at every level, ask what each directory holds and whether its name answers that (§5.5).
-11.2. Run a consistency check (§9) and record the result, including the layout row.
-11.3. If README, \`docs/\` or the state documents do not exist yet, create what the work needs — do not silently work without them.
-11.4. If the tree fails §5.5 — a flat pile, mixed artifact kinds, directories named \`misc\`/\`utils\`/\`old\` — say so in your opening report and propose the regrouping **before** building on top of it. Reorganizing is part of taking over, not a later cleanup.
-11.5. Then state, in one short message, what you found and what you intend to do first.
+11.1. 在改动一个陌生项目之前，先重建它的状态：读内联的合同文档与索引、打开 \`private/tortuous.jsonl\`（如果项目有）读它的负知识、跑 \`git log --oneline\` 与 \`git status\`，并**走查整棵目录树**——每一层都问这个目录装什么、它的名字是否回答了这一点（§5.5）。注意树的哪部分是公开面、哪部分是状态边界（§1.7）。
+11.2. 做一次一致性检查（§9）并记录结果，包括布局那一行。
+11.3. 如果 README、\`docs/\` 或状态文档还不存在，就创建工作所需的部分——不要在没有它们的情况下默默开工。
+11.4. 如果这棵树不通过 §5.5——一堆扁平文件、混放的产物种类、名为 \`misc\`/\`utils\`/\`old\` 的目录——在你的开场报告里说出来，并在**动手之前**提出重新分组。重组是接管的一部分，不是事后的清理。
+11.5. 然后用一条短消息说明你发现了什么、打算先做什么。
 
-## 12. Parallel sessions on one project
+## 12. 同一项目上的并行会话
 
-More than one main agent may run on the same project root at the same time — each in its own session, working on a different part. The state documents are shared, and they cannot be merged, so without rules a second writer silently overwrites the first. These rules keep parallel work safe. (On 2026-10-07 three main agents really did write the same four documents of one project in a single day; every rule below answers a failure that actually happened.)
+同一个项目根上可能同时跑多个主 agent，各自做不同的部分。状态文档是共享的，且无法合并，所以没有规则时第二个写者会静默覆盖第一个。
 
-12.1. **One document owner.** Only one session — the one that took the project over first, unless the user says otherwise — writes \`done.md\`, \`plan.md\`, \`todo.md\` and \`tortuous.md\`. Other parallel sessions **do not** edit those four. They write code and, when they must record something, put it in their own module's notes or in the single owner's inbox; the owner folds it into the shared documents.
+12.1. **单一文档主。** 只有一个会话——最先接管项目的那个，除非用户另有指定——写合同文档（\`steward.md\`、\`plan.md\`、\`todo.md\`、\`done.md\`）与两个只追加文件（\`journal.jsonl\`、\`tortuous.jsonl\`）。其他并行会话**不**编辑它们。它们写代码；确有需要记录时，放在自己模块的笔记里或单一文档主的收件处，由文档主归并进共享文件。
 
-12.2. **The owner commits a document change immediately.** A shared document must never sit with uncommitted edits: another session may pick it up mid-edit and build on a half-written state. §2 already requires a document change to be committed with its code; in parallel work this is not optional. The guard \`guardConcurrentWrite\` enforces this with a per-file claim in \`.agents/.forge-claims/\`: created when you write a protected file, **released the moment any commit succeeds**, and deleted automatically when stale (owner quiet for 30 minutes — a crash cannot block the project). A refusal names the claiming session by its id. Keep \`.agents/.forge-claims/\` in \`.gitignore\`; never commit a claim file.
+12.2. **文档主必须立即提交文档改动。** 共享文档绝不能带着未提交的编辑停在那里：另一个会话可能捡起它、基于半写完的状态继续。§2 已经要求文档改动与其代码一起提交；在并行工作中这不是可选项。守卫 \`guardConcurrentWrite\` 用 \`private/.forge-claims/\` 里的逐文件认领来强制：你写受保护文件时创建认领，**任何提交成功的那一刻释放**，属主静默超时后自动过期。拒绝消息会以会话 id 指名认领者。把 \`private/.forge-claims/\` 放进 \`.gitignore\`；绝不提交认领文件。
 
-12.3. **Claim before you touch a module.** Before changing a module, a route, or a shared concept, add one line to the top of \`plan.md\`'s **正在做** list: \`<session> → <what>\`. Remove the line when the work lands. Another session must read this list before starting and must not step onto a claimed area; if the whole project is claimed, wait or ask the user, do not race.
+12.3. **并发协调靠机制，不靠手工清单。** 会话随时可能被强制结束——关机、额度耗尽、用户中止——所以**不要手工维护"在办"列表或"我正在改哪些文件"的清单**：它必然变脏，而清理它需要一次你可能不会有的收尾。机制替你做了三件事：digest 里的**在办认领**块每轮列出谁正在改哪个文件（它是从认领集算出来的视图，不会过期）；写冲突由守卫在**你动手那一刻**拦下并指名对方会话；属主静默超过认领窗口（默认 10 分钟，\`claimStaleMs\` 可配）的认领自动过期，接手时 digest 会告诉你**已接手谁的认领、动手前先重读那个文件**。你只需要遵守最后这条：接手别人过期的认领前，重新读文件再写。
 
-12.4. **One vocabulary, everywhere.** Every parallel session uses the same \`.agents/steward.md\` controlled vocabulary (§6). A session that needs a new word adds it there in its own commit — and \`.agents/steward.md\` is a shared document, so §12.2's commit-immediately rule applies to it too. Never introduce a synonym for a concept that already has a name (§6.1.3); that fragments the vocabulary across agents.
+12.4. **一套词汇，处处一致。** 每个并行会话使用同一份自带规则文件里的受控词汇（§6）。需要新词的会话在自己的提交里加进去——而自带规则文件是共享文档，所以 §12.2 的"立即提交"规则对它同样适用。绝不为已有名字的概念引入同义词（§6.1.3）。
 
-12.5. **A spawned subagent inherits nothing — check before you adopt.** A \`spawn\` subagent starts without this protocol, without the digest, and without the vocabulary, so treat its report as untrusted input: before acting on any name, route, or structure it proposes, check it against §6 and the layout rules. (\`fork\` subagents do inherit the preset; see §12.9.) Do not let a subagent's convenience naming enter the project unreviewed.
+12.5. **spawn 出来的子 agent 什么都不继承——采纳前先核对。** \`spawn\` 子 agent 启动时没有本协议、没有 digest、没有词汇表，所以把它的报告当作**不可信输入**：在采纳它提出的任何名字、路线或结构之前，对照 §6 与布局规则检查。（\`fork\` 子 agent 会继承预设；见 §12.9。）
 
-12.6. **Leave the tree clean, or say so.** When you stop — at the end of a goal, a session, or a hand-off — the working tree must be either clean (everything committed) or its dirty state recorded in the owner's \`done.md\` Drift: what is uncommitted, why, and which session should pick it up next. A pile of uncommitted changes from a finished session is how the next session — human or agent — loses an hour reconstructing what was real.
+12.6. **让树保持干净，或者说明它不干净。** 当你停下——目标结束、会话结束或交接时——工作树必须要么干净（全部已提交），要么它的脏状态记进文档主的 \`done.md\` Drift：什么未提交、为什么、下一个该由哪个会话接手。
 
-12.7. **When in doubt, stop and report.** If you find a shared document dirty, a claim that is not yours, or a change you do not understand: stop, do not overwrite, and tell the user. A pause costs minutes; a silent overwrite costs the other agent's work.
+12.7. **有疑问就停下并报告。** 如果你发现共享文档是脏的、发现不属于你的认领、或发现你无法理解的改动：停下，不要覆盖，告诉用户。
 
-12.8. **Two subagent modes — pick the tool by the task.** Two tools open two deliberately different children:
-  - \`subagent_fork\` (**fork**) joins the child to your preset revision and copies your context: the child carries this protocol, the digest and the controlled vocabulary, plus your conversation. Use it when the child must **collaborate on project work** — know the conventions, continue a thread, write with the right vocabulary.
-  - \`subagent\` (**spawn**) opens a **clean room**: no inherited context, no preset, just the task you give it. Use it when the parent's context is a burden rather than a help — a **simple self-contained task**, a **code review** that must read the code without your biases, or **read-only recon** you will summarise yourself.
-  Choose per task, not by habit. Whatever the mode, give a narrow, read-mostly task: name the exact files it may touch, say whether it may write, and forbid it from editing the shared state documents — its findings come back to you, and you (or the document owner) fold them in. A \`spawn\` child's output is untrusted until checked (§12.5).
+12.8. **两种子 agent 模式——按任务选工具。**
+  - \`subagent_fork\`（**fork**）把子体接到你的预设版本上并复制你的上下文：子体带着本协议、digest、受控词汇以及你的对话。当子体必须**协作做项目工作**时用它。
+  - \`subagent\`（**spawn**）开一间**干净房间**：不继承上下文、不继承预设，只有你给它的任务。当父上下文是负担而不是帮助时用它——简单的自包含任务、必须不带你的偏见读代码的代码评审、或你自己来总结的只读侦察。
+  无论哪种模式，都给一个窄的、以读为主的任务：点名它可以碰的准确文件、说明它能否写入、并禁止它编辑共享状态文档——它的发现回到你这里归并。
 
-12.9. **If you are the subagent.** A forked subagent inherits this protocol; act on it even though you did not take the project over. (A spawned one does not — you have only the task text, so stay strictly within it.) Default to read-only exploration: inspect, measure, and report — do not edit the shared state documents (\`done\`/\`plan\`/\`todo\`/\`tortuous\`/\`.agents/steward.md\`), which belong to the parent's session. If the task genuinely requires writing, touch only the files the task names, name new things with the project's controlled vocabulary (§6), keep §5.5's layout, and leave the working tree clean or tell the parent exactly what you changed. Report findings as input for the parent to review, not as decisions already made — the parent is accountable for merging your output into the project.`;
+12.9. **如果你是那个子 agent。** fork 出来的子 agent 继承本协议；即使你没有接管项目，也照它行动。（spawn 出来的不继承——你只有任务文本，严格待在其中。）默认只读探索：检查、测量、报告——不要编辑共享状态文档（\`private/\` 下的四份文档与 \`steward.md\`）。若任务确实需要写入，只碰任务点名的文件，用项目的受控词汇命名新东西（§6），保持 §5.5 的布局，保持公开面开源就绪（§1.7），并让工作树干净或准确告诉父方你改了什么。把发现作为**给父方审阅的输入**提交，而不是已经做出的决定。`;
 
 /**
  * The post-compaction recovery procedure. Kept separate from the protocol because it is
  * triggered by a mechanism, not merely read.
  */
-const RECOVERY = `# Project Forge Mode — resuming after context compaction
+const RECOVERY = `# 项目锻造模式 — 上下文压缩之后的恢复
 
-Your context was compressed; the project state was not. Recover it in this order before making any change:
+你的上下文被压缩了；项目状态没有。在做任何改动之前，按这个顺序恢复它：
 
-1. **Read the state that is already in front of you.** \`plan.md\`, \`todo.md\` and \`done.md\` are inlined in your runtime context, and so is the repository state (branch, HEAD, recent commits). Start there; do not ask the user what the documents already record.
-2. **Read \`tortuous.md\`** from the project root before choosing any approach — it lists the routes already disproved.
-3. **Re-state the protocol** in your reply: the five state layers, local-only git with checkpoint commits, the four documents and what each one holds, \`README.md\` versus \`docs/\`, layered modular organization with explicit boundaries, necessary comments that explain why, the standalone \`test/\` project rule, and the state-consistency requirement.
-4. **Run a state consistency check** (§9): compare the documents with \`git status\` and \`git log\`. Record every mismatch in the **Drift** section of \`done.md\` before continuing.
-5. **Then continue** the work from \`todo.md\`. If a task's state is unclear, ask the user — but only about what the documents cannot answer.
+1. **先读已经在你面前的资料。** 如果 digest 已内联（见下），\`plan.md\`、\`todo.md\`、\`done.md\` 与仓库状态都在里面；如果它没有出现，就自己从 \`private/\` 读取这三份文档。不要问用户那些文档已经记录的事。
+2. **读 \`private/tortuous.jsonl\` 的索引，再决定要不要打开它**——它列出了已经被证伪的路。
+3. **用三句话复述你在做什么**：当前任务是什么、它的状态在哪份文档里、下一步是什么。不要复述整份协议。
+4. **做一次状态一致性检查**（§9）：把文档与 \`git status\`、\`git log\` 比对。在继续之前把每一处不符记进 \`private/done.md\` 的 Drift 节。
+5. **然后从 \`private/todo.md\` 继续工作。** 若某任务的状态不清楚，问用户——但只问文档回答不了的部分。
 
-This procedure exists because the conversation is not the project's memory. The repository is.`;
+这个流程存在，是因为对话不是项目的记忆。仓库才是。`;
 
 /** Heading of the inlined project-memory block. */
 const DIGEST_HEADING = '## Project memory (maintained documents)';
@@ -682,8 +1015,54 @@ const DIGEST_HEADING = '## Project memory (maintained documents)';
 /** Heading of the inlined repository-state block. */
 const REPO_HEADING = '## Repository state (read from .git)';
 
+/**
+ * Heading of the in-flight block: who is editing what right now, rendered from the claim set
+ * rather than written down by hand. A hand-kept list would be stale exactly when it matters,
+ * because the session that should have cleaned it up is the one that was killed.
+ */
+const IN_FLIGHT_HEADING = '## 在办认领（谁正在改什么）';
+
 /** Trailing note the digest carries about the one document it omits. */
-const DIGEST_NOTE = '`tortuous.md` is deliberately not inlined; read it before choosing an approach that may have failed before.';
+const BUDGET_HEADING = '## ⚠ 超出预算（不截断，只提示）';
+
+/**
+ * Render the in-flight block: every live claim in this project plus the takeovers this session
+ * just performed. Expired claims are left out — the guard deletes them when it next touches the
+ * same file, and listing them would suggest a conflict that no longer exists.
+ *
+ * This is a view, not a document: it is derived from the claim set on every render, so it
+ * cannot go stale and nobody has to remember to clean it up.
+ * @param cwd - the project root.
+ * @param config - the validated row config.
+ * @param selfId - the session reading this digest, so its own claims are marked as such.
+ * @param takeovers - takeovers this session performed, `{ path, owner, at }`.
+ * @returns the rendered lines, or undefined when nothing is in flight.
+ */
+function renderInFlight(cwd, config, selfId, takeovers) {
+  const now = Date.now();
+  const lines = [];
+  for (const claimFile of claimFiles(cwd, config)) {
+    let claim;
+    try {
+      claim = JSON.parse(readFileSync(claimFile, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!claimFresh(claim, config)) continue;
+    const rel = typeof claim.path === 'string' && claim.path.length > 0
+      ? claim.path
+      : basename(claimFile).replace(/\.json$/, '');
+    const idleMinutes = Math.max(0, Math.round((now - claim.time) / 60000));
+    const mine = selfId !== undefined && String(claim.owner) === String(selfId);
+    lines.push(`- \`${rel}\` ← 会话 ${shortId(claim.owner)}${mine ? '（本会话）' : ''}，静默 ${idleMinutes} 分钟`);
+  }
+  for (const takeover of takeovers ?? []) {
+    lines.push(
+      `- 已接手 \`${takeover.path}\`：原属会话 ${shortId(takeover.owner)} 的认领已过期——动手前先重读该文件`,
+    );
+  }
+  return lines.length === 0 ? undefined : lines.join('\n');
+}
 
 /**
  * Read one file synchronously; undefined when it is absent or unreadable.
@@ -696,6 +1075,108 @@ function readIfPresent(absolute) {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Parse an append-only JSONL file into its records, skipping malformed lines.
+ *
+ * Records are one per line by construction (`\n` inside a record is escaped), so a line that
+ * does not parse is a damaged record, not a multi-line value: dropping it keeps the index
+ * usable instead of losing the whole file to one bad write.
+ * @param absolute - resolved path.
+ * @returns the parsed records, or an empty array when the file is absent or empty.
+ */
+function readJsonlRecords(absolute) {
+  const text = readIfPresent(absolute);
+  if (text === undefined) return [];
+  const records = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed !== null && typeof parsed === 'object') records.push(parsed);
+    } catch {
+      // A torn line at the tail of an append-only file is expected after a killed write.
+    }
+  }
+  return records;
+}
+
+/**
+ * Describe one negative-knowledge record in a single line.
+ *
+ * The record carries its kind at the front (there are no sections in an append-only file), so
+ * the index can say what sort of thing each entry is without reading the prose.
+ * @param record - one parsed record.
+ * @returns the index line, or undefined when the record has no usable identity.
+ */
+function tortuousIndexLine(record) {
+  const id = typeof record.id === 'string' ? record.id : undefined;
+  if (id === undefined) return undefined;
+  const kind = record.kind === 'deviation' ? '偏差' : '失败路线';
+  const headline = typeof record.conclusion === 'string' && record.conclusion.length > 0
+    ? record.conclusion
+    : typeof record.title === 'string' ? record.title : '';
+  return `- ${id}（${kind}）${headline}`;
+}
+
+/**
+ * Render the negative-knowledge index: one line per record, newest last.
+ *
+ * Never inlined in full — the file grows without bound — but an index is what makes the
+ * negative knowledge discoverable at all: without it a model has no reason to read the file.
+ * @param cwd - the project root.
+ * @param config - the normalized configuration.
+ * @returns the index text, or undefined when there is nothing to index.
+ */
+function renderTortuousIndex(cwd, config) {
+  const absolute = resolveStateFile(cwd, config, config.tortuousFile).absolute;
+  const lines = readJsonlRecords(absolute)
+    .map(tortuousIndexLine)
+    .filter((line) => line !== undefined);
+  if (lines.length === 0) return undefined;
+  // Keep the newest entries: the budget is spent where the risk of repeating a mistake is.
+  const kept = [];
+  let used = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (used + line.length + 1 > config.tortuousIndexBytes) break;
+    used += line.length + 1;
+    kept.unshift(line);
+  }
+  const omitted = lines.length - kept.length;
+  if (omitted > 0) kept.unshift(`- （更早的 ${omitted} 条未内联；要查就读文件）`);
+  return kept.join('\n');
+}
+
+/**
+ * Render the tail of the append-only journal — used by the recovery message only.
+ *
+ * The journal is a record, not a constraint: it is not worth a per-request budget, but a
+ * session that just lost its context does need to know what happened immediately before.
+ * @param cwd - the project root.
+ * @param config - the normalized configuration.
+ * @returns the rendered tail, or undefined when the journal is empty or absent.
+ */
+function renderJournalTail(cwd, config) {
+  const absolute = resolveStateFile(cwd, config, config.journalFile).absolute;
+  const records = readJsonlRecords(absolute);
+  if (records.length === 0) return undefined;
+  const tail = records.slice(-Math.max(1, config.journalRecoveryEntries));
+  const lines = tail.map((record) => {
+    const when = typeof record.at === 'string' ? `${record.at} ` : '';
+    const headline = typeof record.summary === 'string' ? record.summary : JSON.stringify(record);
+    return `- ${when}${headline}`;
+  });
+  return lines.join('\n');
+}
+
+/** Name the files that stay read-on-demand, so their existence is never a surprise. */
+function renderReadOnDemand(cwd, config) {
+  const name = (relative) => `\`${displayPath(cwd, resolveStateFile(cwd, config, relative).absolute)}\``;
+  return `按需读（不内联）：${name(config.tortuousFile)}（负知识：失败路线与偏差）、`
+    + `${name(config.journalFile)}（工作记录）、\`${displayPath(cwd, resolveStateFile(cwd, config, 'rationale').absolute)}/\`（推导与取证）。`;
 }
 
 /**
@@ -878,53 +1359,54 @@ export function apply(ctx, config) {
     const cwd = state.agent.session.header.cwd;
     if (typeof cwd !== 'string' || cwd.length === 0) return;
     const parts = [];
+    const oversize = [];
     let used = 0;
 
     /**
-     * Render one document under its own tail budget.
+     * Inline one **contract** document in full.
      *
-     * The tail, not the head, is what a resuming agent needs: these documents are
-     * maintained newest-last, so the end holds the current state while the beginning is
-     * history that `git log` and the shortest-path section already cover. The omission
-     * note is counted inside the budget, so the rendered size stays predictable.
-     * @param label - the document's display name.
+     * Contracts are never truncated: silently losing the end of `done.md` or `plan.md` is
+     * exactly the failure this mode exists to prevent, and a resuming agent cannot tell a
+     * missing tail from a short document. Going over budget is *reported* instead — the
+     * report is stable text, so it costs nothing once the prefix is cached.
+     * @param label - the document's display name, relative to the project root.
      * @param absolute - its resolved path.
+     * @param budgetKey - the key `documentBudgets` is looked up by.
      * @returns whether the document existed and was inlined.
      */
-    const appendFile = (label, absolute) => {
+    const appendContract = (label, absolute, budgetKey) => {
       const text = readIfPresent(absolute);
       if (text === undefined) return false;
-      const perDocument = typeof config.digestTailLimits?.[label] === 'number'
-        ? config.digestTailLimits[label]
-        : config.digestDefaultTailLimit;
-      // Two ceilings: the document's own budget, and whatever is left of the global one.
-      const limit = Math.max(0, Math.min(perDocument, config.digestMaxBytes - used));
-      let body;
-      if (text.length <= limit) {
-        body = text.trimEnd();
-      } else {
-        const note = `(…omitted ${text.length - limit} characters from the start of ${label}; read the file, or \`git log\` for its history)`;
-        const keep = Math.max(0, limit - note.length - 1);
-        body = `${note}\n${text.slice(text.length - keep)}`;
-      }
+      const budget = typeof config.documentBudgets?.[budgetKey] === 'number'
+        ? config.documentBudgets[budgetKey]
+        : config.documentBudgetDefault;
+      const body = text.trimEnd();
+      if (body.length > budget) oversize.push(`${label} ${body.length}/${budget}`);
       used += body.length;
       parts.push(`### ${label}\n${body}`);
       return true;
     };
 
-    for (const relative of config.digestFiles) {
-      const absolute = isAbsolute(relative) ? relative : join(cwd, relative);
-      appendFile(relative, absolute);
+    // Rules first: they change least, and everything after them is what pays for a change.
+    if (config.stewardFile !== false) {
+      const absolute = firstPresent(stewardCandidates(cwd, config));
+      const label = displayPath(cwd, absolute);
+      state.stewardPresent = appendContract(
+        `${label} (this repository's own steward rules)`, absolute, 'steward.md',
+      );
     }
 
-    if (config.stewardFile !== false) {
-      const relative = config.stewardFilePath;
-      const absolute = isAbsolute(relative) ? relative : join(cwd, relative);
-      if (appendFile(`${relative} (this repository's own steward rules)`, absolute)) {
-        state.stewardPresent = true;
-      } else {
-        state.stewardPresent = false;
-      }
+    // Negative knowledge: the index only. One line per record, derived from the JSONL, so the
+    // model can see that a route was already disproved without carrying the whole file.
+    const index = renderTortuousIndex(cwd, config);
+    if (index !== undefined) {
+      used += index.length;
+      parts.push(`### ${displayPath(cwd, resolveStateFile(cwd, config, config.tortuousFile).absolute)}（索引）\n${index}`);
+    }
+
+    for (const relative of config.digestFiles) {
+      const resolved = resolveStateFile(cwd, config, relative);
+      appendContract(displayPath(cwd, resolved.absolute), resolved.absolute, relative);
     }
 
     if (parts.length === 0) {
@@ -953,7 +1435,22 @@ export function apply(ctx, config) {
         state.unrecordedCommits = false;
       }
     }
-    if (config.digestFiles.includes('tortuous.md') === false) blocks.push('', DIGEST_NOTE);
+    // Who is editing what, derived from the live claim set. Parallel sessions read this
+    // instead of maintaining a shared "in progress" list that a killed session cannot clean.
+    const inFlight = renderInFlight(cwd, config, state.agent?.id, state.takeovers);
+    if (inFlight !== undefined) blocks.push('', IN_FLIGHT_HEADING, '', inFlight);
+    // Static text, so it costs nothing once the prefix is cached, and it is what makes the
+    // read-on-demand files discoverable at all.
+    blocks.push('', renderReadOnDemand(cwd, config));
+    // Budget warnings go last: they are derived from the sizes above, so a document growing
+    // invalidates nothing that follows it.
+    const warnings = [...oversize];
+    if (used > config.digestMaxBytes) warnings.push(`digest 合计 ${used}/${config.digestMaxBytes}`);
+    if (warnings.length > 0) {
+      blocks.push('', BUDGET_HEADING, '', ...warnings.map((line) => `- ${line}`),
+        `- 处置：把最旧或最细的内容移进 \`${config.journalFile}\` 或 \`private/rationale/\`，正文只留现在还生效的东西。`);
+    }
+    state.journalTail = renderJournalTail(cwd, config);
     // `systemPrompt.context()` entries are ALWAYS run through dsh-system-prompt's
     // strict `{{variable}}` interpolator — the `interpolate: false` option is only
     // honored on sections, and a document quoting Vue/mustache braces (e.g. a
@@ -971,14 +1468,16 @@ export function apply(ctx, config) {
    * The recovery message folded into the first step after a compaction.
    * @param marker - identifies the compaction this message answers.
    * @param snapshot - the current digest, so the message is self-contained.
+   * @param journal - the journal tail: what happened, which the digest deliberately omits.
    * @returns a UserMessage-shaped object.
    */
-  const recoveryMessage = (marker, snapshot) => {
+  const recoveryMessage = (marker, snapshot, journal) => {
     const text = [
       'Context compaction just settled. Project Forge recovery:',
-      '1. The documents and the repository state are inlined below — read them there; read `tortuous.md` before repeating a failed approach.',
+      '1. The contract documents and the repository state are inlined below — read them there. The negative knowledge and the journal are **not** inlined: open them on demand, and read the negative knowledge before repeating an approach that may have failed before.',
       '2. Re-state the steward protocol in your reply before making changes.',
       '3. Run a state consistency check against `git status` / `git log`, and record every mismatch in the Drift section of `done.md`.',
+      ...(journal === undefined ? [] : ['', `工作记录（\`${config.journalFile}\` 最近几条）：`, journal]),
       '',
       snapshot ?? '(the state documents could not be read; open them from the project root)',
     ].join('\n');
@@ -1021,6 +1520,8 @@ export function apply(ctx, config) {
       stewardPresent: false,
       /** HEAD as the digest last read it. */
       repoHead: undefined,
+      /** Stale claims this session took over, shown in the digest until the next commit. */
+      takeovers: [],
     };
     states.set(agent.id, state);
 
@@ -1108,7 +1609,7 @@ export function apply(ctx, config) {
       rememberRecoveredMarker(payload.agent.id, pending);
       refresh(state, true);
       ctx.logger?.info?.('project-forge: folding post-compaction recovery (%s)', pending);
-      return { ...decision, messages: [...decision.messages, recoveryMessage(pending, state.text)] };
+      return { ...decision, messages: [...decision.messages, recoveryMessage(pending, state.text, state.journalTail)] };
     });
   }
 
@@ -1119,9 +1620,9 @@ export function apply(ctx, config) {
   //
   // Publishing is local-only by default, and authorization is a CONSUMABLE grant, never a
   // standing permission (§1.2): the user writes `push allowed: <remote-glob> [×N]` into the
-  // repository's `.agents/steward.md`; each guarded `git push` consumes one grant — ×1
-  // deletes the line, ×N counts down — and the repository returns to local-only the moment
-  // the grants run out. One user consent cannot silently become "push forever".
+  // repository's steward rules (`private/steward.md`); each guarded `git push` consumes one
+  // grant — ×1 deletes the line, ×N counts down — and the repository returns to local-only the
+  // moment the grants run out. One user consent cannot silently become "push forever".
   if (config.guardLocalGit !== false && ctx.tools !== undefined) {
     ctx.effect(
       () =>
@@ -1140,12 +1641,13 @@ export function apply(ctx, config) {
           // `git push` consumes a one-shot grant from the repository\'s own steward rules.
           if (escape.label === 'git push') {
             const cwd = execution.agent?.session?.header?.cwd;
-            const granted = typeof cwd === 'string' && checkPushGrant(cwd, command) === true;
+            const granted = typeof cwd === 'string' && checkPushGrant(cwd, config, command) === true;
             if (granted) return undefined; // grant consumed — this push, and only this push, proceeds
             return [
               'Project Forge Mode refuses `git push`: this repository is local-only, and no one-shot',
-              'grant covers this push. To authorize exactly one push sequence, add ONE line to',
-              '`.agents/steward.md` (only because the user explicitly asked to publish):',
+              'grant covers this push. To authorize exactly one push sequence, add ONE line to the',
+              `repository's steward rules (\`${stewardDisplayPath(config)}\`)`,
+              '(only because the user explicitly asked to publish):',
               '`push allowed: <remote-url-or-glob> [×N]` — each guarded push consumes one grant',
               'and the repository returns to local-only when they run out. History-rewriting',
               'operations are never covered by a grant.',
@@ -1186,7 +1688,7 @@ export function apply(ctx, config) {
           // The acknowledgement may live in any maintained document: the digest is what the
           // model sees, so requiring it in the commit itself is what makes the walk real.
           const documents = config.digestFiles
-            .map((document) => readIfPresent(join(cwd, document)) ?? '')
+            .map((document) => readIfPresent(resolveStateFile(cwd, config, document).absolute) ?? '')
             .join('\n')
             .toLowerCase();
           if (acknowledgesLayout(documents, facts)) return undefined;
@@ -1201,6 +1703,113 @@ export function apply(ctx, config) {
           ].join(' ');
         }),
       'project-forge.layoutCheckpointGuard()',
+    );
+  }
+
+  // ── The clock, as a footnote on tool results ────────────────────────────────
+  // Nothing else tells a session what time it is, and the time is the one fact that changes
+  // every minute — so it rides on tool output instead of the system prompt or the digest (D30).
+  // The prompt stays static, the digest stays cache-friendly, and this fires no more often than
+  // `clockFooterThrottleMs`. Only successful results get the footnote, and only when the tail is
+  // text, so a failure or a structured value still reads exactly as the tool produced it.
+  if (config.clockFooter !== false && ctx.tools !== undefined) {
+    const lastStamp = new Map();
+    ctx.on('tools/post-execute', async (execution, result, next) => {
+      const decision = await next();
+      if (decision.kind !== 'accept' || decision.value !== undefined) return decision;
+      if (result.isError === true) return decision;
+      const now = Date.now();
+      const owner = execution.agent?.id ?? '';
+      if (now - (lastStamp.get(owner) ?? 0) < config.clockFooterThrottleMs) return decision;
+      const blocks = decision.content ?? result.content;
+      const tail = Array.isArray(blocks) ? blocks[blocks.length - 1] : undefined;
+      if (tail === undefined || tail.type !== 'text') return decision;
+      lastStamp.set(owner, now);
+      const local = new Date(now).toLocaleString('zh-CN', { hour12: false });
+      return {
+        ...decision,
+        content: [
+          ...blocks.slice(0, -1),
+          { type: 'text', text: `${tail.text}\n\n---\n⏱ ${new Date(now).toISOString()}（本机 ${local}）` },
+        ],
+      };
+    });
+  }
+
+  // ── Guard: append-only records ───────────────────────────────────────────────
+  // `journal.jsonl` and `tortuous.jsonl` are read as "one record per line, appended only"
+  // (§4.0.2). A write that does not keep the previous text as a prefix breaks that promise:
+  // the index derived from those lines would silently lose entries. Comparing raw strings is
+  // enough — no JSON parsing, so even a half-written record cannot slip through.
+  if (config.guardAppendOnly !== false && ctx.tools !== undefined) {
+    const records = [config.journalFile, config.tortuousFile].map((name) => name.toLowerCase());
+    ctx.effect(
+      () =>
+        ctx.tools.guard((execution) => {
+          if (execution.name !== 'write') return undefined;
+          const path = execution.arguments?.file_path;
+          const content = execution.arguments?.content;
+          if (typeof path !== 'string' || typeof content !== 'string') return undefined;
+          const normalized = path.replace(/\\/g, '/').toLowerCase();
+          if (!records.some((name) => normalized === name || normalized.endsWith(`/${name}`))) return undefined;
+          const before = readIfPresent(path);
+          if (before === undefined || before.length === 0) return undefined;
+          if (content.startsWith(before)) return undefined;
+          return [
+            `Project Forge Mode refuses this write: \`${path}\` is an append-only record file.`,
+            'Its lines are read as records and the digest index is derived from them, so a write that',
+            'does not keep the text already on disk as its prefix loses records silently.',
+            'Write the previous content followed by the new record(s) — or append to the end — and retry.',
+          ].join(' ');
+        }),
+      'project-forge.appendOnlyGuard()',
+    );
+  }
+
+  // ── Guard: size ratchet (opt-in) ─────────────────────────────────────────────
+  // Budgets are warning lines by default: the digest prints "⚠ 超出预算 <file> a/b" and nothing
+  // blocks (§4.0.1). Under `sizeLimitMode: 'ratchet'` a commit is additionally refused when it
+  // makes an **already-over-hard-cap** contract document bigger. Shrinking, splitting and moving
+  // always pass — an absolute threshold would refuse the very commit that starts the slimming,
+  // which is how a file gets frozen at its over-budget size.
+  if (config.sizeLimitMode === 'ratchet' && ctx.tools !== undefined) {
+    ctx.effect(
+      () =>
+        ctx.tools.guard((execution) => {
+          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
+          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const cwd = execution.agent?.session?.header?.cwd;
+          if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
+          const offenders = [];
+          for (const document of config.digestFiles) {
+            const resolved = resolveStateFile(cwd, config, document);
+            const after = readIfPresent(resolved.absolute);
+            if (after === undefined) continue;
+            const budget = typeof config.documentBudgets?.[document] === 'number'
+              ? config.documentBudgets[document]
+              : config.documentBudgetDefault;
+            const hardCap = Math.round(budget * config.sizeHardRatio);
+            if (after.length <= hardCap) continue;
+            const label = displayPath(cwd, resolved.absolute);
+            let before;
+            try {
+              before = execFileSync('git', ['-C', cwd, 'show', `HEAD:${label}`], { encoding: 'utf8' }).length;
+            } catch {
+              continue; // Nothing committed yet: there is no previous size to compare against.
+            }
+            if (after.length > before) offenders.push(`${label} ${before} → ${after.length}（硬上限 ${hardCap}）`);
+          }
+          if (offenders.length === 0) return undefined;
+          return [
+            'Project Forge Mode refuses `git commit`: a contract document is over its hard cap and this commit',
+            `grows it further — ${offenders.join('；')}.`,
+            `The budget is ${JSON.stringify(config.documentBudgets)} characters; the hard cap is `
+              + `${config.sizeHardRatio}× a budget. Shrinking, splitting and moving content always pass.`,
+            'Move the oldest or finest-grained content into the record file or `rationale/`, keeping only what',
+            'is still in force, and commit again.',
+          ].join(' ');
+        }),
+      'project-forge.sizeRatchetGuard()',
     );
   }
 
@@ -1249,7 +1858,7 @@ export function apply(ctx, config) {
             state.compacted === true
               ? 'This session was compacted and no state document has been updated since.'
               : 'The repository holds commits the state documents do not mention.',
-            `Update \`done.md\` (and \`todo.md\` / \`plan.md\` as they changed): record the current state,`,
+            `Update \`private/done.md\` (and \`private/todo.md\` / \`private/plan.md\` as they changed): record the current state,`,
             'reconcile it with `git status` and `git log`, and put any mismatch in the Drift section —',
             'then commit.',
           ].join(' ');
@@ -1276,31 +1885,70 @@ export function apply(ctx, config) {
           const cwd = agent.session?.header?.cwd;
           if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
           // A tracked file that exists only to hold credentials. `.env` is matched with a
-          // boundary so legitimate names like `dev.env.sample` are not flagged.
+          // boundary so legitimate names like `dev.env.sample` are not flagged. Files inside
+          // the state boundary are exempt: that directory is the local-only side of the
+          // project, and the open-source rule (protocol §1.7) governs what may sit outside it.
           const tracked = runGitOrNothing(cwd, ['ls-files']);
           if (tracked === undefined) return undefined;
           const trackedFiles = tracked.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
           const envPattern = /(^|\/)\.env(\.|$)/;
           const offending = trackedFiles.filter(
             (path) =>
-              envPattern.test(path) ||
-              /\.(pem|key|p12|pfx)$/i.test(path) ||
-              /(^|\/)(credentials|secrets?)(\/|\.|$)/i.test(path),
+              !isInsideStateDir(cwd, config, path)
+              && (envPattern.test(path)
+                || /\.(pem|key|p12|pfx)$/i.test(path)
+                || /(^|\/)(credentials|secrets?)(\/|\.|$)/i.test(path)),
           );
           if (offending.length === 0) return undefined;
           return [
-            'Project Forge Mode refuses `git commit`: the repository is staged to record a credential.',
-            `Tracked file(s) that exist only to hold secrets: ${offending.slice(0, 5).join(', ')}${offending.length > 5 ? ` and ${offending.length - 5} more` : ''}.`,
+            'Project Forge Mode refuses `git commit`: the public surface is staged to record a credential.',
+            `Tracked file(s) outside the state boundary that exist only to hold secrets: ${offending.slice(0, 5).join(', ')}${offending.length > 5 ? ` and ${offending.length - 5} more` : ''}.`,
             'A committed secret stays in `git log` forever — removing it later does not erase history.',
-            'Purge the file from history (e.g. `git rm --cached` + filter or BFG), move the value into a',
-            'secret store or an untracked, gitignored file, and only then commit. See §1.6 of the protocol.',
+            `Keep it inside \`${stateDirDisplayPath(config)}/\` (the local-only side of the project), or`,
+            'move the value into an untracked, gitignored file. Purge it from history',
+            '(`git rm --cached` + filter or BFG) before committing. See §1.6 and §1.7 of the protocol.',
           ].join(' ');
         }),
       'project-forge.secretsGuard()',
     );
   }
 
-  // ── Guard E: concurrent-write interception (per-file claims) ───────────────────
+  // ── Guard E: the public surface stays open-source-ready (§1.7) ─────────────────
+  // The boundary rule has one decidable core: a commit must not put machine-private material
+  // into the files that leave with the project, because the export step is "delete the state
+  // boundary, copy, `git init`" — whatever is outside it is published as-is. What is decidable
+  // without judgement is a home directory of this machine, a source file reaching into the
+  // boundary, and a high-confidence secret literal outside a configuration file. Whether
+  // prose "reads public" is a judgement, and this guard does not pretend to make it.
+  if (config.guardPrivacyBoundary !== false && ctx.tools !== undefined) {
+    ctx.effect(
+      () =>
+        ctx.tools.guard((execution) => {
+          if (execution.name !== 'pwsh' && execution.name !== 'bash') return undefined;
+          if (!isCommitCommand(execution.arguments?.command)) return undefined;
+          const cwd = execution.agent?.session?.header?.cwd;
+          if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
+          const findings = scanPublicSurface(cwd, config);
+          if (findings.length === 0) return undefined;
+          const shown = findings.slice(0, 4)
+            .map((finding) => `\`${finding.path}\` (${finding.reasons.join('; ')})`)
+            .join(', ');
+          return [
+            'Project Forge Mode refuses `git commit`: the public surface is not open-source-ready.',
+            `Offending file(s): ${shown}${findings.length > 4 ? ` and ${findings.length - 4} more` : ''}.`,
+            `Everything outside \`${stateDirDisplayPath(config)}/\` is written as if the project were already public:`,
+            'no home directory of this machine, no source file reaching into the boundary, and no secret',
+            'literal outside a configuration file (a config file that carries real values ships an example',
+            'twin for newcomers). Move the value into the boundary, abstract it into a config file with an',
+            'example beside it, or — for a file whose whole job is to demonstrate the boundary — mark it',
+            `\`${PRIVACY_ALLOW_MARKER}\`. See §1.7 of the protocol.`,
+          ].join(' ');
+        }),
+      'project-forge.privacyBoundaryGuard()',
+    );
+  }
+
+  // ── Guard F: concurrent-write interception (per-file claims) ───────────────────
   // On 2026-10-07 three main agents really did work one project in parallel, and the
   // shared state documents (done/plan/todo/tortuous) were each written by two of them;
   // narrative documents cannot be merged, so the second writer silently overwrote the
@@ -1323,7 +1971,10 @@ export function apply(ctx, config) {
       if (!isCommitCommand(execution.arguments?.command)) return;
       const cwd = execution.agent?.session?.header?.cwd;
       if (typeof cwd !== 'string' || cwd.length === 0) return;
-      clearClaims(cwd);
+      clearClaims(cwd, config);
+      // The work landed, so the takeover notices have served their purpose.
+      const state = states.get(execution.agent?.id);
+      if (state !== undefined) state.takeovers = [];
     });
 
     ctx.effect(
@@ -1333,7 +1984,7 @@ export function apply(ctx, config) {
           const rawPath = execution.arguments?.file_path ?? execution.arguments?.path;
           if (typeof rawPath !== 'string' || rawPath.length === 0) return undefined;
           const base = rawPath.split(/[\\/]/).pop().toLowerCase();
-          const SHARED = ['done.md', 'plan.md', 'todo.md', 'tortuous.md', 'steward.md'];
+          const SHARED = ['done.md', 'plan.md', 'todo.md', 'steward.md', 'journal.jsonl', 'tortuous.jsonl'];
           const isDoc = SHARED.includes(base);
           const mode = config.concurrentWriteMode ?? 'both';
           const protectSource = mode === 'sourceFiles' || mode === 'both';
@@ -1346,20 +1997,37 @@ export function apply(ctx, config) {
           const rel = relative(cwd, absolute).replace(/\\/g, '/');
           // Never claim a file outside the project: a session may write scratch files in
           // Temp or elsewhere, and their claims do not belong to this project's claim set.
-          if (rel.startsWith('..')) return undefined;
+          // `path.relative` returns the target UNCHANGED when the two paths share no root
+          // (another drive on Windows), so an absolute `rel` is the second half of the check —
+          // without it a scratch file on D: was claimed by a project living on C: (real
+          // defect, 2026-10-14: a claim appeared for a file under %TEMP%).
+          if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
           const self = agentIdentity(agent);
 
           // A working-tree change we do not own is always a blocker, even with no claim.
           const dirty = gitDirtyPath(cwd, absolute);
-          let claim = readClaim(cwd, rel);
-          if (claim !== undefined && !claimFresh(claim)) {
-            // Stale claim: its owner is gone (crash, hang, or finished without commit).
+          let claim = readClaim(cwd, config, rel);
+          if (claim !== undefined && !claimFresh(claim, config)) {
+            // Stale claim: its owner is gone (killed, crashed, or finished without commit).
             // Delete it and treat the file as unclaimed instead of leaving residue forever.
-            deleteClaim(cwd, rel);
+            // A guard can only refuse or allow — never annotate — so the takeover is recorded
+            // on the session and surfaces in the next digest render, where the agent that is
+            // about to overwrite the file will actually read it.
+            const deadOwner = String(claim.owner ?? '');
+            deleteClaim(cwd, config, rel);
             claim = undefined;
+            const state = states.get(agent.id);
+            if (state !== undefined && deadOwner.length > 0 && deadOwner !== self) {
+              ctx.logger?.info?.(
+                'project-forge: took over the stale claim on %s from session %s',
+                rel,
+                shortId(deadOwner),
+              );
+              state.takeovers = [...state.takeovers, { path: rel, owner: deadOwner, at: Date.now() }].slice(-5);
+            }
           }
           // Housekeeping: drop every other stale claim in this project while we are here.
-          clearStaleClaims(cwd);
+          clearStaleClaims(cwd, config);
           if (claim !== undefined && claim.owner !== self) {
             return [
               `Project Forge Mode refuses to write \`${rel}\`: it is claimed by session ${shortId(claim.owner)}.`,
@@ -1375,14 +2043,14 @@ export function apply(ctx, config) {
             ].join(' ');
           }
           // Take or keep the claim, then allow the write.
-          writeClaim(cwd, rel, { owner: self, time: Date.now() });
+          writeClaim(cwd, config, rel, { owner: self, time: Date.now() });
           return undefined;
         }),
       'project-forge.concurrentWriteGuard()',
     );
   }
 
-  // ── Guard F: malformed tool-call repair (empty call id) ──────────────────────
+  // ── Guard G: malformed tool-call repair (empty call id) ──────────────────────
   // A model that writes a broken function tag (`<function=psh?` — observed with
   // mimo-v2.6-flash) makes pi-ai emit a tool-call block whose id is an empty
   // string. The loop tolerates it in memory, but the V4 session codec refuses to
@@ -1463,10 +2131,13 @@ function shortId(owner) {
 
 /**
  * Delete one claim file, if present. Absent files are not an error.
+ * @param cwd - the project root.
+ * @param config - the validated row config.
+ * @param rel - the file's repository-relative path.
  */
-function deleteClaim(cwd, rel) {
+function deleteClaim(cwd, config, rel) {
   try {
-    unlinkSync(claimPath(cwd, rel));
+    unlinkSync(claimPath(cwd, config, rel));
   } catch {
     /* absent or locked — fine */
   }
@@ -1475,19 +2146,14 @@ function deleteClaim(cwd, rel) {
 /**
  * Remove every stale claim in one project (owner quiet past the staleness window). Called
  * lazily on each guarded write, so residue cannot accumulate across sessions.
+ * @param cwd - the project root.
+ * @param config - the validated row config.
  */
-function clearStaleClaims(cwd) {
-  let names;
-  try {
-    names = readdirSync(join(cwd, '.agents', '.forge-claims'));
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
+function clearStaleClaims(cwd, config) {
+  for (const path of claimFiles(cwd, config)) {
     try {
-      const claim = JSON.parse(readFileSync(join(cwd, '.agents', '.forge-claims', name), 'utf8'));
-      if (!claimFresh(claim)) unlinkSync(join(cwd, '.agents', '.forge-claims', name));
+      const claim = JSON.parse(readFileSync(path, 'utf8'));
+      if (!claimFresh(claim, config)) unlinkSync(path);
     } catch {
       /* unreadable entries are left alone */
     }
@@ -1497,21 +2163,15 @@ function clearStaleClaims(cwd) {
 /**
  * Remove every claim in one project. Called after a successful commit: the work has landed,
  * so no claim is mid-edit any more.
+ * @param cwd - the project root.
+ * @param config - the validated row config.
  */
-function clearClaims(cwd) {
-  let names;
-  try {
-    names = readdirSync(join(cwd, '.agents', '.forge-claims'));
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    if (name.endsWith('.json')) {
-      try {
-        unlinkSync(join(cwd, '.agents', '.forge-claims', name));
-      } catch {
-        /* best-effort */
-      }
+function clearClaims(cwd, config) {
+  for (const path of claimFiles(cwd, config)) {
+    try {
+      unlinkSync(path);
+    } catch {
+      /* best-effort */
     }
   }
 }

@@ -1,6 +1,10 @@
 /**
  * Project Forge mode — the plugin's Config schema.
  *
+ * privacy-guard: allow — this file is the mode's own implementation: it defines the state
+ * boundary's default (`private/`) and the steward rules' path, so it names boundary paths on
+ * purpose and the privacy scan is deliberately not applied to it.
+ *
  * Cordis validates a plugin row's `config` through the **Standard Schema** interface
  * (`runtime.Config['~standard'].validate(raw)`), which is why a preset row's child
  * plugin must expose either a real schemastery schema or an object implementing that
@@ -23,19 +27,45 @@ const DEFAULTS = Object.freeze({
   protocol: true,
   recoveryProcedure: true,
   digest: true,
-  digestFiles: Object.freeze(['plan.md', 'todo.md', 'done.md']),
   /**
-   * Per-document tail budget, in characters. Each document is read from its **end**: these
-   * documents are maintained newest-last, so the tail is the current state, while the head
-   * is history that `git log` and the shortest-path section already cover.
+   * The state boundary: the one directory that holds the project's own state — the four
+   * documents, the steward rules and the concurrent-write claims. Everything outside it is
+   * the **public surface**, written as if the project were already open source.
+   * `'.'` restores the pre-boundary layout (documents at the project root).
    */
-  digestTailLimits: Object.freeze({ 'plan.md': 20000, 'todo.md': 10000, 'done.md': 20000 }),
-  /** Tail budget for a document the map does not name. */
-  digestDefaultTailLimit: 20000,
+  stateDir: 'private',
+  /**
+   * The **contract** documents: inlined in full, in this order. The order follows the one
+   * rule the mode uses everywhere — least-volatile first, most-volatile last — because a
+   * change invalidates everything *after* it in the cached prefix. The steward rules are
+   * rendered before these and are configured separately.
+   */
+  digestFiles: Object.freeze(['plan.md', 'done.md', 'todo.md']),
+  /**
+   * Per-document budget, in characters. A budget is a **warning threshold**, never a
+   * truncation: a contract document is always inlined in full (the model must not lose the
+   * part it needs), and going over budget is reported in the digest itself so the agent
+   * moves detail out instead of quietly losing it.
+   */
+  documentBudgets: Object.freeze({ 'steward.md': 6000, 'plan.md': 15000, 'done.md': 2000, 'todo.md': 5000 }),
+  /** Budget for a contract document the map does not name. */
+  documentBudgetDefault: 20000,
+  /** The **record** file: append-only JSONL, never inlined; only a few entries ride recovery. */
+  journalFile: 'journal.jsonl',
+  /** How many recent journal entries the compaction-recovery message carries. */
+  journalRecoveryEntries: 5,
+  /** The **negative-knowledge** file: append-only JSONL, never inlined; only an index is. */
+  tortuousFile: 'tortuous.jsonl',
+  /** Character ceiling for the negative-knowledge index rendered into the digest. */
+  tortuousIndexBytes: 2500,
   repoStateInDigest: true,
   stewardFile: true,
-  stewardFilePath: '.agents/steward.md',
-  digestMaxBytes: 32768,
+  stewardFilePath: 'private/steward.md',
+  /**
+   * Ceiling for the whole digest. With every contract document on its own budget this is a
+   * pure fuse: crossing it adds a warning line and never truncates or reallocates.
+   */
+  digestMaxBytes: 28000,
   digestRefreshMs: 5000,
   injectOnCompaction: true,
   /**
@@ -47,9 +77,40 @@ const DEFAULTS = Object.freeze({
   guardCommitCheckpoint: true,
   guardLayoutCheckpoint: true,
   guardSecrets: true,
+  guardPrivacyBoundary: true,
   guardConcurrentWrite: true,
+  /**
+   * The append-only records (`journalFile`, `tortuousFile`) may only grow: a write whose new
+   * text does not start with the text already on disk is refused, because a rewrite loses
+   * records silently — the digest index is derived from those lines.
+   */
+  guardAppendOnly: true,
+  /**
+   * What the size budgets do at commit time. `'warn'` (default) only prints the digest warning
+   * line — nothing is blocked. `'ratchet'` additionally refuses a commit that makes an
+   * **already-over-cap** contract document bigger; shrinking, splitting and moving always pass,
+   * so the first slimming commit can never be blocked by its own over-budget file.
+   */
+  sizeLimitMode: 'warn',
+  /** Hard cap, as a multiple of the document's budget, for `sizeLimitMode: 'ratchet'`. */
+  sizeHardRatio: 1.5,
+  /**
+   * The clock rides on tool results (D30): after a successful tool call — at most once per
+   * `clockFooterThrottleMs` — one line carrying the current time is appended to the result, so the
+   * system prompt stays static and the digest stays cache-friendly. Failures are left untouched.
+   */
+  clockFooter: true,
+  /** Minimum interval between two clock footnotes, in milliseconds, per session. */
+  clockFooterThrottleMs: 600000,
   /** Which shared files the concurrent-write guard protects. */
   concurrentWriteMode: 'both',
+  /**
+   * How long a file claim survives without its owner touching it. A claim is refreshed on
+   * every write by its owner, so an active session never loses one; a session that was killed
+   * (machine off, quota gone, user interrupted) stops refreshing and its claims expire — that
+   * expiry is the only cleanup this design relies on, because nothing waits for a turn to end.
+   */
+  claimStaleMs: 10 * 60 * 1000,
   guardMalformedToolCall: true,
 })
 
@@ -58,9 +119,14 @@ const TYPES = Object.freeze({
   protocol: 'boolean',
   recoveryProcedure: 'boolean',
   digest: 'boolean',
+  stateDir: 'string',
   digestFiles: 'array',
-  digestTailLimits: 'object',
-  digestDefaultTailLimit: 'number',
+  documentBudgets: 'object',
+  documentBudgetDefault: 'number',
+  journalFile: 'string',
+  journalRecoveryEntries: 'number',
+  tortuousFile: 'string',
+  tortuousIndexBytes: 'number',
   repoStateInDigest: 'boolean',
   stewardFile: 'boolean',
   stewardFilePath: 'string',
@@ -72,8 +138,15 @@ const TYPES = Object.freeze({
   guardCommitCheckpoint: 'boolean',
   guardLayoutCheckpoint: 'boolean',
   guardSecrets: 'boolean',
+  guardPrivacyBoundary: 'boolean',
   guardConcurrentWrite: 'boolean',
+  guardAppendOnly: 'boolean',
+  sizeLimitMode: 'string',
+  sizeHardRatio: 'number',
+  clockFooter: 'boolean',
+  clockFooterThrottleMs: 'number',
   concurrentWriteMode: 'string',
+  claimStaleMs: 'number',
   guardMalformedToolCall: 'boolean',
 })
 
@@ -111,11 +184,23 @@ function collectIssues(raw) {
     if (key === 'stewardFilePath' && value.trim().length === 0) {
       issues.push({ message: 'stewardFilePath must not be blank', path: [key] })
     }
+    if ((key === 'journalFile' || key === 'tortuousFile') && value.trim().length === 0) {
+      issues.push({ message: `${key} must not be blank`, path: [key] })
+    }
+    if (key === 'stateDir' && value.trim().length === 0) {
+      issues.push({ message: 'stateDir must not be blank (use "." for the project root)', path: [key] })
+    }
+    if (key === 'sizeLimitMode' && value !== 'warn' && value !== 'ratchet') {
+      issues.push({ message: 'sizeLimitMode must be "warn" or "ratchet"', path: [key] })
+    }
+    if (key === 'clockFooterThrottleMs' && !(value > 0)) {
+      issues.push({ message: 'clockFooterThrottleMs must be a positive number of milliseconds', path: [key] })
+    }
     if (expected === 'object') {
       for (const [document, limit] of Object.entries(value)) {
         if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
           issues.push({
-            message: `digestTailLimits["${document}"] must be a positive number`,
+            message: `documentBudgets["${document}"] must be a positive number`,
             path: [key, document],
           })
         }
@@ -143,7 +228,7 @@ function normalize(raw) {
     normalized[key] = raw[key] === undefined ? fallback : raw[key]
   }
   normalized.digestFiles = Object.freeze([...normalized.digestFiles])
-  normalized.digestTailLimits = Object.freeze({ ...normalized.digestTailLimits })
+  normalized.documentBudgets = Object.freeze({ ...normalized.documentBudgets })
   return Object.freeze(normalized)
 }
 
@@ -154,21 +239,37 @@ function normalize(raw) {
  * - `protocol` (boolean, default true) — register the steward protocol.
  * - `recoveryProcedure` (boolean, default true) — register the post-compaction procedure.
  * - `digest` (boolean, default true) — inline the living documents into every request.
- * - `digestFiles` (string[], default `['plan.md','todo.md','done.md']`) — inlined in order.
- *   `tortuous.md` is deliberately absent: it is the longest document and the least
- *   frequently needed, so it stays a read-on-demand file.
- * - `digestTailLimits` (object, default `{ 'plan.md': 20000, 'todo.md': 10000,
- *   'done.md': 20000 }`) — **per-document character budget, taken from the document's
- *   end**. A document longer than its budget is inlined as its tail, preceded by a note
- *   saying how much was omitted; the head is history that `git log` already holds.
- * - `digestDefaultTailLimit` (number, default 20000) — tail budget for a document the map
- *   does not name.
+ * - `stateDir` (string, default `private`) — the **state boundary**: the one directory that
+ *   holds the project's own state (the four documents, the steward rules, the claims).
+ *   Everything outside it is the public surface, written as if the project were already
+ *   open source. `'.'` restores the pre-boundary layout. A project whose documents still
+ *   sit at the root keeps working: the reader falls back to the bare name when the file is
+ *   not inside the boundary.
+ * - `digestFiles` (string[], default `['plan.md','done.md','todo.md']`) — the **contract
+ *   documents**, inlined in full and in exactly this order: least-volatile first, because a
+ *   change invalidates everything after it in the cached prefix. The steward rules are
+ *   rendered before them (`stewardFile`). `journal.jsonl` and `tortuous.jsonl` are
+ *   deliberately absent: one is a record, the other is longest and least frequently needed —
+ *   both stay read-on-demand.
+ * - `documentBudgets` (object, default `{ 'steward.md': 6000, 'plan.md': 15000,
+ *   'done.md': 2000, 'todo.md': 5000 }`) — **per-document character budget**. A budget is a
+ *   warning threshold, never a truncation: an over-budget document is still inlined whole and
+ *   the digest says by how much it is over, so detail gets moved out instead of silently lost.
+ * - `documentBudgetDefault` (number, default 20000) — budget for a document the map omits.
+ * - `journalFile` (string, default `journal.jsonl`) — the append-only record; never inlined,
+ *   except that the compaction-recovery message carries its last few entries.
+ * - `journalRecoveryEntries` (number, default 5) — how many those are.
+ * - `tortuousFile` (string, default `tortuous.jsonl`) — the append-only negative-knowledge
+ *   file; only its index (one line per record) is inlined.
+ * - `tortuousIndexBytes` (number, default 2500) — size ceiling for that index.
  * - `repoStateInDigest` (boolean, default true) — append branch, HEAD and the recent
  *   commit subjects to the digest, so drift between the documents and the repository
  *   is visible without spending a tool call.
  * - `stewardFile` (boolean, default true) — also inline the repository's own rule file,
  *   making the repository self-describing.
- * - `stewardFilePath` (string, default `.agents/steward.md`) — that file's path.
+ * - `stewardFilePath` (string, default `private/steward.md`) — that file's path. A project
+ *   that still keeps it at `.agents/steward.md` is read there as well, so one-shot publish
+ *   grants written before the boundary existed keep working.
  * - `digestMaxBytes` (number, default 32768) — ceiling for the per-document budgets
  *   combined; it is the backstop that keeps the whole inlined block bounded.
  * - `digestRefreshMs` (number, default 5000) — how often the digest re-reads the files.
@@ -181,6 +282,16 @@ function normalize(raw) {
  * - `guardCommitCheckpoint` (boolean, default true) — after a compaction, refuse
  *   `git commit` until a state document has been updated; when the digest can see
  *   commits the documents do not mention, refuse it too.
+ * - `guardSecrets` (boolean, default true) — refuse a commit that would record a credential
+ *   file **outside the state boundary**; inside it, a local-only repository may hold them.
+ * - `guardPrivacyBoundary` (boolean, default true) — refuse a commit whose public files leak
+ *   the machine's home path, reach into the state boundary from source, or carry a
+ *   high-confidence secret literal outside a configuration file.
+ * - `guardConcurrentWrite` (boolean, default true) — refuse to write a shared file another
+ *   live session has claimed, and take over a claim whose owner went quiet.
+ * - `claimStaleMs` (number, default 600000 = 10 minutes) — how long a claim survives without
+ *   its owner touching it; the owner refreshes it by writing, so a killed session's claims
+ *   expire by themselves and no turn-end cleanup is needed.
  * - `guardMalformedToolCall` (boolean, default true) — rewrite an empty tool-call id
  *   arriving from the model stream into a synthetic non-empty one. An empty id kills
  *   the session: the V4 writer refuses the matching tool/result, the drain wedges,

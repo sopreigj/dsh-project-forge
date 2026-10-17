@@ -143,5 +143,60 @@
   rmSync(idxDir, { recursive: true, force: true });
   console.log('negative-knowledge index summarises every record: OK');
 
+  // The drift signal ("commits none of the documents mention") was computed for the checkpoint
+  // guard and never rendered: the model could only learn it when a commit was already refused.
+  // §9 wants the other order, so it is a conditionally present digest block. The fixture writes a
+  // synthetic reflog entry instead of a real commit, so the hash is known and no subprocess runs.
+  {
+    const driftDir = mkdtempSync(join(tmpdir(), 'steward-drift-'));
+    mkdirSync(join(driftDir, 'private'), { recursive: true });
+    writeFileSync(join(driftDir, 'private', 'plan.md'), '# plan\nno hashes here\n');
+    writeFileSync(join(driftDir, 'private', 'todo.md'), '# todo\n');
+    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\nfresh\n');
+    initRepo(driftDir);
+    const reflog = join(driftDir, '.git', 'logs', 'HEAD');
+    mkdirSync(join(driftDir, '.git', 'logs'), { recursive: true });
+    writeFileSync(
+      reflog,
+      `0000000000000000000000000000000000000000 abcdef1234567890abcdef1234567890abcdef12`
+      + ` steward <steward@test> 1700000000 +0000\tfeat: 文档没有提到的那个提交\n`,
+    );
+
+    const { ctx: driftCtx, record: driftRecord } = makeCtx();
+    plugin.apply(driftCtx, standard.validate({ injectOnCompaction: false }).value);
+    const { contexts: driftContexts } = createdAgent(
+      driftRecord,
+      driftDir,
+      `session-drift-${Date.now().toString(36)}`,
+    );
+    const driftText = driftContexts[0].text({});
+    assert.ok(
+      driftText.includes('## ⚠ 状态文档落后于仓库'),
+      `the digest warns that the documents lag the repository: ${driftText.slice(0, 200)}`,
+    );
+    assert.ok(
+      driftText.includes('**1** 个提交在四份合同里都没有被提到'),
+      'and says how many commits the documents miss',
+    );
+
+    // Citing the hash in a contract document acknowledges it — then the block must disappear,
+    // otherwise the warning would nag forever and stop being read.
+    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\n见 abcdef12 这个提交\n');
+    const { ctx: ackCtx, record: ackRecord } = makeCtx();
+    plugin.apply(ackCtx, standard.validate({ injectOnCompaction: false }).value);
+    const { contexts: ackContexts } = createdAgent(
+      ackRecord,
+      driftDir,
+      `session-ack-${Date.now().toString(36)}`,
+    );
+    const ackText = ackContexts[0].text({});
+    assert.ok(
+      !ackText.includes('## ⚠ 状态文档落后于仓库'),
+      'citing the commit in a document clears the drift block',
+    );
+    rmSync(driftDir, { recursive: true, force: true });
+    console.log('drift block appears only while documents lag the repository: OK');
+  }
+
 
 export { digest };

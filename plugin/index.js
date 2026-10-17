@@ -70,10 +70,12 @@ import {
   IN_FLIGHT_HEADING,
   BUDGET_HEADING,
   REPAIR_HEADING,
+  DRIFT_HEADING,
   NO_MEMORY_HEADING,
   renderNoMemory,
   renderInFlight,
   renderRepairs,
+  renderDrift,
   renderTortuousIndex,
   renderJournalTail,
   renderReadOnDemand,
@@ -243,14 +245,21 @@ export function apply(ctx, config) {
         // counts as covered, so the signal stays strict and does not nag forever.
         const hashes = [...repo.matchAll(/^- ([0-9a-f]{7,12}) /gm)].map((match) => match[1]);
         const newestCited = hashes.findIndex((hash) => documentText.includes(hash));
-        state.unrecordedCommits = newestCited === -1
-          ? hashes.length > 0 && state.docSinceCompaction !== true
-          : hashes.slice(0, newestCited).length > 0;
+        const unrecorded = newestCited === -1
+          ? (hashes.length > 0 && state.docSinceCompaction !== true ? hashes.length : 0)
+          : hashes.slice(0, newestCited).length;
+        state.unrecordedCommits = unrecorded > 0;
+        state.unrecordedCount = unrecorded;
       } else {
         state.repoHead = undefined;
         state.unrecordedCommits = false;
       }
     }
+    // A commit no document mentions is the one drift signal the mode already computes; until
+    // now its only visible consequence was a commit refusal. §9 wants the other order: notice
+    // while working. Conditional, so a current project pays nothing for it.
+    const drift = renderDrift(state.unrecordedCount);
+    if (drift !== undefined) blocks.push('', DRIFT_HEADING, '', drift);
     // Who is editing what, derived from the live claim set. Parallel sessions read this
     // instead of maintaining a shared "in progress" list that a killed session cannot clean.
     const inFlight = renderInFlight(cwd, config, state.agent?.id, state.takeovers);

@@ -38,7 +38,6 @@ export const BUDGET_HEADING = '## ⚠ 超出预算（不截断，只提示）';
 
 /** Heading of the block that reports tool calls this session had to repair. */
 export const REPAIR_HEADING = '## ⚠ 本会话修复过的畸形工具调用';
-
 /**
  * Report the malformed tool calls repaired so far, or `undefined` when there were none.
  *
@@ -54,6 +53,26 @@ export const REPAIR_HEADING = '## ⚠ 本会话修复过的畸形工具调用';
 export function renderRepairs(count) {
   if (typeof count !== 'number' || count <= 0) return undefined;
   return `- 本会话已修复 **${count}** 个畸形工具调用（模型写出了坏掉的 function 标签，空 call id 被换成合成 id，所以那个调用会以 unknown tool 失败）。重试前先检查是不是标签写坏了，不要重复同一个形状。`;
+}
+
+/** Heading of the block that reports state documents falling behind the repository. */
+export const DRIFT_HEADING = '## ⚠ 状态文档落后于仓库';
+
+/**
+ * Report that commits exist which none of the maintained documents mention, or `undefined` when
+ * every recent commit is cited.
+ *
+ * The count is computed for the repository-state block anyway (and used by the checkpoint guard),
+ * but until now the only place it surfaced was a **commit refusal**. §9 asks for the opposite
+ * order: notice the drift while working, not when the commit is already being made. One line,
+ * absent whenever the documents are current, so a healthy session pays nothing.
+ *
+ * @param count - recent commits that no document cites.
+ */
+export function renderDrift(count) {
+  if (typeof count !== 'number' || count <= 0) return undefined;
+  return `- 最近的 **${count}** 个提交在四份合同里都没有被提到：文档描述的是更早的状态。`
+    + '先与仓库对账（下面那份仓库状态就是现场事实），把不符之处写进 `done.md` 的 Drift 一节，再继续。';
 }
 
 /** Heading of the block that explains an empty digest. */

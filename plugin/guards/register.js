@@ -140,6 +140,10 @@ export function registerGuards(ctx, config, states) {
             `项目根现有 ${facts.rootFiles.length} 个非文档文件（${facts.kinds.length} 类`
               + `：${facts.kinds.join(', ')}）与 ${facts.directories.length} 个目录`
               + `（顶层：${facts.topLevel.slice(0, 8).join(', ')}${facts.topLevel.length > 8 ? ', …' : ''}）。`,
+            // The top-level listing above mixes directories and files, so it does not say which
+            // entries are the problem. Naming them is what turns "走查这棵树" into a move list.
+            `这些是根目录里的非文档文件：${[...facts.rootFiles].sort().slice(0, 5).join(', ')}`
+              + `${facts.rootFiles.length > 5 ? `, …（共 ${facts.rootFiles.length} 个）` : ''}。`,
             '按 §5.5 走查这棵树，把结论记进 `done.md`：每个目录装什么、新文件该放哪、',
             '你的结论是什么。只写文件名不算——要点名一个目录，或者显式说明',
             '扁平布局是一个决定（「保持扁平」/ "kept flat: <why>"）——然后再提交。',

@@ -29,6 +29,18 @@
     assert.equal(typeof refusal, 'string', 'a mixed-kind root is refused until acknowledged');
     assert.ok(refusal.includes('布局'), 'the refusal is about the layout');
     assert.ok(refusal.includes('tool.py'), 'the refusal names what it measured');
+    // The counts alone say "two kinds of artifact live at the root"; the labelled list says
+    // *which files* they are, which is what makes the walk into a move list.
+    const labelled = refusal.slice(refusal.indexOf('这些是根目录里的非文档文件：'));
+    assert.ok(labelled.startsWith('这些是根目录里的非文档文件：'), `the problem files are labelled: ${refusal}`);
+    const justTheList = labelled.slice(0, labelled.indexOf('。'));
+    for (const name of ['tool.py', 'daemon.service', 'deploy.sh']) {
+      assert.ok(justTheList.includes(name), `the labelled list names ${name}: ${justTheList}`);
+    }
+    assert.ok(
+      !justTheList.includes('done.md'),
+      'contract documents are not listed as the problem (they belong at the root)',
+    );
 
     // A bare file name in the documents does NOT acknowledge: state documents mention file
     // names incidentally, so accepting one would pass on a lucky string, not on a real walk.

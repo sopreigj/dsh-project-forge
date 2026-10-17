@@ -134,8 +134,8 @@
 - **`2.11` 删改既有东西之前，先说清它在挡什么**（切斯特顿栅栏）：查不到"谁加的、为什么"不等于没有原因。
 - **协议 §3 新增 `3.5`：`CHANGELOG.md` 的写法**——一版一入口、`[Unreleased]` 区块、六类分组
   （`Added / Changed / Deprecated / Removed / Fixed / Security`）、ISO 日期、与 `package.json` 的版本一致。
-- **`release/check-changelog.mjs`**：发布前的第七门检查，版本必须在本文件里有条目、顶部保留 `[Unreleased]`；
-  条目格式不合规即拒绝发布。
+- **`release/check-changelog.mjs`**：发布前的第七门检查（此后又加了两门，它今天排在八门中的第五位），
+  版本必须在本文件里有条目、顶部保留 `[Unreleased]`；条目格式不合规即拒绝发布。
 
 ### Changed
 

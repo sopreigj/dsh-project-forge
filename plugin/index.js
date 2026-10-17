@@ -65,6 +65,7 @@ import { tmpdir } from 'node:os';
 
 import { Config } from './schema.js';
 import { PROTOCOL, RECOVERY } from './protocol/index.js';
+import { applyClock } from './clock/index.js';
 
 /** Producer kind stamped on every message this plugin injects. */
 const SOURCE_KIND = 'project-forge';
@@ -1370,35 +1371,8 @@ export function apply(ctx, config) {
     );
   }
 
-  // ── The clock, as a footnote on tool results ────────────────────────────────
-  // Nothing else tells a session what time it is, and the time is the one fact that changes
-  // every minute — so it rides on tool output instead of the system prompt or the digest (D30).
-  // The prompt stays static, the digest stays cache-friendly, and this fires no more often than
-  // `clockFooterThrottleMs`. Only successful results get the footnote, and only when the tail is
-  // text, so a failure or a structured value still reads exactly as the tool produced it.
-  if (config.clockFooter !== false && ctx.tools !== undefined) {
-    const lastStamp = new Map();
-    ctx.on('tools/post-execute', async (execution, result, next) => {
-      const decision = await next();
-      if (decision.kind !== 'accept' || decision.value !== undefined) return decision;
-      if (result.isError === true) return decision;
-      const now = Date.now();
-      const owner = execution.agent?.id ?? '';
-      if (now - (lastStamp.get(owner) ?? 0) < config.clockFooterThrottleMs) return decision;
-      const blocks = decision.content ?? result.content;
-      const tail = Array.isArray(blocks) ? blocks[blocks.length - 1] : undefined;
-      if (tail === undefined || tail.type !== 'text') return decision;
-      lastStamp.set(owner, now);
-      const local = new Date(now).toLocaleString('zh-CN', { hour12: false });
-      return {
-        ...decision,
-        content: [
-          ...blocks.slice(0, -1),
-          { type: 'text', text: `${tail.text}\n\n---\n⏱ ${new Date(now).toISOString()}（本机 ${local}）` },
-        ],
-      };
-    });
-  }
+  // The clock footer (D30) lives in its own slice: ./clock/index.js.
+  applyClock(ctx, config);
 
   // ── Guard: append-only records ───────────────────────────────────────────────
   // `journal.jsonl` and `tortuous.jsonl` are read as "one record per line, appended only"

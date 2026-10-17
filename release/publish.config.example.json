@@ -1,0 +1,7 @@
+{
+  "publicRepo": "<this machine: path to the release repository>",
+  "dshSource": "<optional: path to a DSH source checkout, for the truth-exporting checks>",
+  "message": "sync: snapshot from dev",
+  "excludeDirs": [".git", "private"],
+  "excludeFiles": [".gitignore", "publish.config.json"]
+}

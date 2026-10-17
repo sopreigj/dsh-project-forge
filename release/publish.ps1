@@ -1,42 +1,73 @@
-# publish.ps1 — 把 dev 工作区的发布快照同步到公开仓库。
+# publish.ps1 — 把 dev 工作区的发布快照同步到一个指定的发布目录。
+#
+# 分工（协议 §1.7）：
+#   · **做法在这里**（公开面）：跑完全部检查 → 镜像 → 由发布目录提交并推送。
+#   · **本机约定在配置里**：发布目录、DSH 源码树、额外排除项都从 `release/publish.config.json`
+#     读取；那份文件被 .gitignore 忽略，且镜像时排除，所以它既不进公开面也不进发布副本。
+#     仓库附带一份示例孪生 `publish.config.example.json`，按它的形状写自己的那一份即可。
 #
 # 工作方式：
-#   1. 先跑五项检查，任一不过就拒绝发布——它们各自对应一类"静默腐烂"：
+#   1. 先跑全部检查，任一不过就拒绝发布——它们各自对应一类"静默腐烂"：
 #        · test/run.mjs              自测：配置解析、digest、全部守卫、patch↔schema 漂移
-#          （切片检查在 test/ 下，runner 按原顺序逐个 import；传的第二个参数是要加载的插件入口）
 #        · check-consistency.mjs     文档与代码：配置参考表 ↔ schema；两份技能副本逐字节相同
-#        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard（无源码树时自跳过）
+#        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard
 #        · check-public-surface.mjs  公开面：用本模式自己的隐私守卫检查它自己的仓库
+#        · check-prompt-variables.mjs 提示词：patch 里的 {{...}} 必须已注册
 #        · check-changelog.mjs      更新日志：package.json 的版本必须有条目、顶部留 Unreleased
-#        · check-runtime.mjs         运行时：内置技能的 frontmatter、customSkillDirs 计算出的目标
-#                                    （--repo 可指向第二个 bundle，所以 review/ 也跑同一组检查）
-#          （它还能解码会话日志、核对生效预设与"装的是哪一份"，那些要另传 --session/--copy）
-#   2. 再镜像：`private/`（状态边界：四份合同 + 记录）与 `.gitignore` 之外的全部内容
-#      复制到发布目录；发布目录自带一份忽略状态边界的 .gitignore。
-#   3. 由发布目录提交并推送（公开仓 = 干净单提交流的追加）。
+#        · check-runtime.mjs         运行时 ×2（主 bundle 与 review bundle）
+#   2. 再镜像：**除下面三类之外的全部内容**都复制过去——
+#        ① `.git`（发布目录有自己的历史）
+#        ② 状态边界 `private/`（合同与记录不进发布副本）
+#        ③ 用户自己配置的东西（默认 `.gitignore` 与 `publish.config.json`）
+#      第 ③ 类是配置项，不是硬编码：`excludeDirs` / `excludeFiles` 可以按机器再加。
+#   3. 由发布目录提交；不带 -NoPush 时推送。
 #
-# 用法（在 dev 仓库根运行）：
-#   pwsh release/publish.ps1 -PublicRepo <公开仓路径> [-Message "sync: 一句话说明"] [-DshSource <DSH 源码树>]
-#   或先设环境变量 FORGE_PUBLIC_REPO（以及可选的 DSH_SOURCE），然后 `pwsh release/publish.ps1`
+# 用法（在 dev 仓库根运行，**用 pwsh 7**——Windows PowerShell 5.1 会按 ANSI 读中文注释而解析失败）：
+#   pwsh release/publish.ps1 [-NoPush] [-PublicRepo <路径>] [-DshSource <DSH 源码树>] [-Message "…"]
+#   取值优先级：命令行参数 > release/publish.config.json > 环境变量 FORGE_PUBLIC_REPO / DSH_SOURCE。
 #
-# 路径**不写死在脚本里**：发布目录与 DSH 源码树都是这台机器的布局，写进来就成了不可移植的公开文件（协议 §1.7）。
+# 路径**不写死在脚本里**：它们是这台机器的布局，写进来就成了不可移植的公开文件（协议 §1.7）。
 
 param(
-  [string]$PublicRepo = $env:FORGE_PUBLIC_REPO,
-  [string]$Message = "sync: snapshot from dev",
-  [string]$DshSource = $env:DSH_SOURCE,
+  [string]$PublicRepo,
+  [string]$Message,
+  [string]$DshSource,
   [switch]$NoPush
 )
 
 $ErrorActionPreference = 'Stop'
 $dev = Split-Path -Parent $PSScriptRoot
+$configPath = Join-Path $PSScriptRoot 'publish.config.json'
 
+# 本机配置：存在就读，不存在就是"没有本机约定"（靠参数或环境变量）。
+$config = $null
+if (Test-Path $configPath) {
+  # 配置里放的是本机路径，它绝不能进公开面：被 git 跟踪就是缺陷，直接拒绝。
+  git -C $dev ls-files --error-unmatch 'release/publish.config.json' 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    throw "release/publish.config.json 被 git 跟踪了：它装着本机路径，不能进公开面。请 git rm --cached 它并确认 .gitignore 生效。"
+  }
+  try {
+    $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    Write-Output "配置: release/publish.config.json"
+  } catch {
+    throw "release/publish.config.json 解析失败（$($_.Exception.Message)）：请对照 publish.config.example.json 修好。"
+  }
+}
+
+if (-not $PublicRepo) { $PublicRepo = if ($config) { $config.publicRepo } else { $env:FORGE_PUBLIC_REPO } }
+if (-not $DshSource) { $DshSource = if ($config) { $config.dshSource } else { $env:DSH_SOURCE } }
+if (-not $Message) { $Message = if ($config -and $config.message) { $config.message } else { 'sync: snapshot from dev' } }
 if (-not $PublicRepo) {
-  throw "请用 -PublicRepo <路径> 或环境变量 FORGE_PUBLIC_REPO 指定公开仓目录"
+  throw "没有发布目录：用 -PublicRepo、release/publish.config.json 或环境变量 FORGE_PUBLIC_REPO 指定（见 publish.config.example.json）"
 }
 if (-not (Test-Path "$PublicRepo\.git")) { throw "发布目录不是 git 仓库: $PublicRepo" }
 
-# 1) 发布前的五项检查。检查脚本各自返回非零表示不通过。
+# 镜像的排除项：默认三类（.git / 状态边界 / 用户配置），可按机器在配置里追加。
+$excludeDirs = if ($config -and $config.excludeDirs) { @($config.excludeDirs) } else { @('.git', 'private') }
+$excludeFiles = if ($config -and $config.excludeFiles) { @($config.excludeFiles) } else { @('.gitignore', 'publish.config.json') }
+
+# 1) 发布前的检查。检查脚本各自返回非零表示不通过。
 function Invoke-Check([string]$Label, [string]$Script, [string[]]$Arguments) {
   Write-Output "── $Label"
   & node $Script @Arguments
@@ -53,9 +84,11 @@ Invoke-Check '更新日志（package.json 的版本必须有条目）' "$dev\rel
 Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
 Invoke-Check '运行时·review bundle（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @('--repo', "$dev\review")
 
-# 2) 镜像同步：排除 .git、整个状态边界 private/、.gitignore
-#    （发布版的 .gitignore 由发布目录自己维护，内容是"忽略状态边界"）。
-robocopy $dev $PublicRepo /MIR /XD .git private /XF .gitignore /NFL /NDL /NJH /NJS /NP | Out-Null
+# 2) 镜像同步：除排除项之外的全部内容都过去。
+Write-Output ("镜像排除：目录 [{0}]、文件 [{1}]" -f ($excludeDirs -join ', '), ($excludeFiles -join ', '))
+$xd = @('/XD') + $excludeDirs
+$xf = @('/XF') + $excludeFiles
+robocopy $dev $PublicRepo /MIR @xd @xf /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy 失败 exit=$LASTEXITCODE" }
 
 # 3) 提交并推送。

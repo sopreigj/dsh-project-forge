@@ -262,6 +262,20 @@ import { digest } from './digest.test.mjs';
     assert.ok(/未提交的改动/.test(orphan), 'and the refusal says why');
     assert.ok(/认领/.test(orphan), 'and it names the way forward (a claim on that file)');
 
+    // The advertised way forward must actually work: the refusal prints a claim path, so taking
+    // that exact path is the proof. A refusal whose escape hatch does not exist is worse than no
+    // advice at all — it costs the reader a round trip and teaches it to distrust the guard.
+    const quoted = /`([^`]+)`/g;
+    const steps = [...orphan.matchAll(quoted)].map((match) => match[1]);
+    const claimForB = steps.find((step) => step.endsWith('.json'));
+    assert.ok(claimForB, `the refusal prints the claim path to create (got: ${steps.join(' | ')})`);
+    writeFileSync(join(repo, claimForB), JSON.stringify({ owner: live.session.header.id, path: 'b.py', time: Date.now() }));
+    assert.equal(
+      cwGuard({ name: 'write', arguments: { file_path: join(repo, 'b.py') }, agent: live }),
+      undefined,
+      'claiming the exact path the refusal printed lets the write through',
+    );
+
     rmSync(repo, { recursive: true, force: true });
     console.log('stale-claim takeover over uncommitted work: OK');
   }

@@ -13,7 +13,8 @@
 dsh --version
 ```
 
-看到版本号即可（本文验证于 `0.1.7-rc.2`）。
+看到版本号即可。本文验证于 `0.2.1-rc.2`；**下限是 `0.2.1-rc`**（digest 依赖宿主在 context 级的
+`interpolate: false`，更早的宿主只在 section 上认它）。
 
 ## 2. 安装 bundle
 
@@ -50,13 +51,14 @@ dsh plugin --profile <profile> add link:<checkout>/review
 dsh plugin --profile <profile> exec node -p "require('fs').realpathSync('node_modules/dsh-project-forge')"
 ```
 
-输出应当是你第 2 步 `add` 的那个 `<checkout>`。再让这份活副本自证：
+输出应当是你第 2 步 `add` 的那个 `<checkout>`。再让这份活副本自证（检查项目在包的顶层 `test/`，
+不在 `plugin/` 里）：
 
 ```powershell
-node "<上一步的输出>\plugin\index.test.mjs" "<上一步的输出>\plugin\index.js"
+dsh plugin --profile <profile> exec node "<上一步的输出>\test\run.mjs" "<上一步的输出>\plugin\index.js"
 ```
 
-看到 `all plugin checks passed` 即通过。
+看到 `<包名>: all plugin checks passed` 即通过。
 
 ## 5. 第一次接管
 
@@ -80,15 +82,19 @@ git init
 三处证据，缺一说明模式没生效：
 
 1. 项目里出现了 `private/`，里面有上面那四份合同；
-2. 之后每个**工具结果**末尾都有一行 `⏱ …` 时间脚注；
-3. `git log --oneline` 里能看到检查点提交，且每个提交都伴随状态文档的更新。
+2. 每轮请求都带着 memory 块（digest：四份合同的正文 + 仓库状态）——切换一轮就能看到它随文档变化；
+3. `git log --oneline` 里能看到检查点提交，且每个提交都伴随合同文档的更新。
 
-反过来，如果模式找不到状态文档，它**不会**装作项目没有状态：那一轮的记忆块会直接说"还没有项目记忆"，并
+（**时间不是本模式给的**：预设采纳上游的 `time-context`，时间由宿主按 context 注入；本模式自己的
+`clockFooter` 默认关，因为两个时间来源只会互相打架。想在没有 `time-context` 的 preset 里补一个，
+再把 `clockFooter: true` 打开。）
+
+反过来，如果模式找不到合同文档，它**不会**装作项目没有状态：那一轮的记忆块会直接说"还没有项目记忆"，并
 列出它读过的位置与当前 `stateDir`——照着那几行查工作目录，别在错误的目录里重建一遍。
 
 ## 7. 之后怎么用
 
-- 干完一个逻辑单元（一件事）就让它收尾提交一次：跑相关检查、更新状态文档，然后一个提交。
+- 干完一个逻辑单元（一件事）就让它收尾提交一次：跑相关检查、更新合同文档，然后一个提交。
 - 想知道"现在什么是真的"读 `done.md`；"还剩什么没做"读 `todo.md`。
 - 禁止它做什么：**不会**添加远端，**不会**推送，除非你在同一次对话里明确要它发布。
 

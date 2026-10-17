@@ -17,7 +17,7 @@
 
 | 位置 | 放什么 | 是否随开源流出 |
 |---|---|---|
-| `private/` | 四份合同文档（`steward.md`/`plan.md`/`done.md`/`todo.md`）、两份只追加记录（`journal.jsonl`/`tortuous.jsonl`）、并发认领 `private/.forge-claims/`、本机私密笔记、仅在本地有意义的凭据 | 否（整体删除） |
+| `private/` | 四份合同（`steward.md`/`plan.md`/`done.md`/`todo.md`）、两份只追加记录（`journal.jsonl`/`tortuous.jsonl`）、并发认领 `private/.forge-claims/`、本机私密笔记、仅在本地有意义的凭据 | 否（整体删除） |
 | 公开面其余部分 | 源码、测试、`README.md`、`LICENSE`、`docs/`、部署描述、示例配置 | 是 |
 
 `private/.forge-claims/` 是本模式运行期的临时文件，必须进 `.gitignore`，永不提交。
@@ -75,7 +75,7 @@ cd <新目录>; git init; git add -A; git commit -m "chore: initial public commi
 - **旧项目照常工作**：digest 先找 `<stateDir>/<名字>`，找不到再找项目根的同名文件；自带规则先找
   `private/steward.md`，再找 `.agents/steward.md`、`steward.md`。所以文档仍在根目录、规则仍在
   `.agents/` 的老项目不会被这次改动打断，只是还没有边界。
-- **迁移一个老项目**：把根目录的状态文档与记录（`done.md`、`plan.md`、`todo.md`，以及只追加的记录文件）
+- **迁移一个老项目**：把根目录的合同与记录（`done.md`、`plan.md`、`todo.md`，以及只追加的记录文件）
   `git mv` 进 `private/`，规则从 `.agents/steward.md` 移到 `private/steward.md`，`.gitignore` 里把认领目录
   改成 `private/.forge-claims/`，并在同一次提交里更新 `done.md`（§7.7 要求记录搬迁）。
 - **不想要边界**：把配置 `stateDir` 设为 `'.'`，文档就回到项目根，行为与引入边界之前一致。
@@ -87,6 +87,6 @@ cd <新目录>; git init; git add -A; git commit -m "chore: initial public commi
 |---|---|
 | 这个目录 | 状态边界（state boundary），配置键 `stateDir`，默认 `private/` |
 | 边界之外 | 公开面（public surface） |
-| 边界里的四份文档 | 状态文档（state documents） |
+| 边界里那四份要遵守/参照的文档 | 合同（contract，`steward.md`/`plan.md`/`done.md`/`todo.md`） |
 | 仓库自带规则 | `private/steward.md`（steward rules） |
 | 配置文件的样板 | 示例配置（example twin，`*.example.*`） |

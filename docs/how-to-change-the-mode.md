@@ -2,7 +2,7 @@
 
 三个任务，每个都以"跑什么命令算通过"结束。命令都在本机跑过；失败的形状也照着跑过一遍（见每节末）。
 
-改完任何一处，最后都过一遍 [发布前的五门检查](#改完之后)。
+改完任何一处，最后都过一遍 [发布前的八门检查](#改完之后)。
 
 ## 改协议正文
 
@@ -92,7 +92,7 @@ consistency: 1 处不一致
 
 ## 改完之后
 
-四门检查跑一遍（发布脚本本身就是干这个的）：
+八门检查跑一遍（发布脚本本身就是干这个的，`check-runtime` 会跑两次——本仓一次、`review/` 一次）：
 
 ```powershell
 node test/run.mjs plugin/index.js
@@ -100,6 +100,10 @@ node release/check-consistency.mjs
 node release/check-preset-sync.mjs --source <dsh-checkout>
 node release/check-public-surface.mjs
 node release/check-runtime.mjs       # 无参数即可：查技能 frontmatter 与 customSkillDirs 的目标
+node release/check-runtime.mjs --repo review   # 审查 bundle 的同一套检查
+node release/check-changelog.mjs     # package.json 的版本必须有更新日志条目
+node release/check-prompt-variables.mjs   # patch 里的每个 {{变量}} 都必须是宿主已注册的
+node release/check-installed.mjs     # profile 里的安装条目必须指向真实存在的副本
 ```
 
 装好之后想核对"生效的是哪一份副本"、某条会话日志能否解码、生效预设是不是本模式，再带上输入跑一次：
@@ -117,6 +121,8 @@ pwsh release/publish.ps1 -PublicRepo <公开仓> -DshSource <dsh-checkout> -NoPu
 机器相关的值也可以只配一次：按 `release/publish.config.example.json` 的形状，在同一个 `release/` 目录下
 建一份 `publish.config.json`（它被 gitignore，镜像时也排除），之后同样的命令不带任何参数即可。
 `excludeDirs` / `excludeFiles` 也在这份配置里——默认就是 `.git`、`private/`（状态边界）、
-`.gitignore` 与这份配置自己。
+`.gitignore` 与这份配置自己。**`dshSourceTag` 也在这里**：给了它，那两门从源码导出真值的检查就读
+`git show <tag>:<path>`，而不是读你的工作区（源码树脏的时候，"检查看了别的东西"和"检查通过了"
+看起来一模一样）。
 
-发布脚本会在镜像**之前**重跑这四门检查，任一不过就 `throw`、绝不触碰发布副本。
+发布脚本会在镜像**之前**重跑这八门检查，任一不过就 `throw`、绝不触碰发布副本。

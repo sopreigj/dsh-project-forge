@@ -38,7 +38,7 @@ code that implements it.
 | `injectOnCompaction` | `true` | Fold one recovery message carrying the digest into the first step after a real compaction. |
 | `recoveryMinTurnStep` | `1` | Earliest step of a turn that may carry the recovery message, which bounds it to one per turn. |
 | `guardLocalGit` | `true` | Refuse shell commands that publish the repository or destroy local history. |
-| `guardCommitCheckpoint` | `true` | Refuse `git commit` until a state document has been updated (and when the digest can see commits the documents do not mention). The refusal names the files the session did touch, and the contract documents that would have counted. |
+| `guardCommitCheckpoint` | `true` | Refuse `git commit` until one of the four contract documents has been written since the last commit (the exemption dies the moment HEAD moves — it is not a standing permit), and when git shows commits the documents do not mention. The refusal names the files the session did touch, and the contract documents that would have counted. |
 | `guardLayoutCheckpoint` | `true` | Refuse a commit whose layout check was not acknowledged. The refusal reports what it measured, including a labelled list of the non-document files sitting at the root. |
 | `guardSecrets` | `true` | Refuse a commit that would record a credential file outside the state boundary. |
 | `guardPrivacyBoundary` | `true` | Refuse a commit whose public files leak this machine's home path, reach into the boundary from source, or carry a high-confidence secret literal. |
@@ -49,7 +49,7 @@ code that implements it.
 | `sizeHardRatio` | `1.5` | Hard cap = the document's budget × this factor, used by `"ratchet"`. |
 | `clockFooter` | `false` | Append one line carrying the current time to a successful tool result. Off by default: the preset adopts upstream's `time-context`, and two time sources are one too many. Turn it on for a preset that has no `time-context`. |
 | `clockFooterThrottleMs` | `600000` | Minimum interval between two such lines, per session. |
-| `concurrentWriteMode` | `"both"` | Which shared files the claim guard protects. With `"both"` or `"sourceFiles"` it covers the four state documents, source files, and **any other file this project tracks**; with any other value, the state documents only. Untracked files (build artifacts, drafts) are never claimed. |
+| `concurrentWriteMode` | `"both"` | Which shared files the claim guard protects. With `"both"` or `"sourceFiles"` it covers the four contracts, source files, and **any other file this project tracks**; with any other value, the contracts only. Untracked files (build artifacts, drafts) are never claimed. |
 | `claimStaleMs` | `600000` | How long a claim survives without its owner touching it. Expiry is the only cleanup this design relies on. |
 
 ## Notes

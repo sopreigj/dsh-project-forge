@@ -75,6 +75,22 @@ export function runGitOrNothing(cwd, args) {
 }
 
 /**
+ * Whether git already tracks one path. This is the predicate the claim guard uses to decide
+ * whether a file is *project content* rather than a scratch or generated file: an untracked
+ * path may be a build artifact or a draft, and refusing writes to those would be a false
+ * positive storm, while a tracked path is by definition something the project committed to.
+ * @param cwd - the repository root.
+ * @param absolute - the file's absolute path.
+ * @returns true when the path is tracked, false when it is not or git could not be consulted.
+ */
+export function gitTracksPath(cwd, absolute) {
+  const rel = relative(cwd, absolute).replace(/\\/g, '/');
+  // `--error-unmatch` makes git exit non-zero for a path it does not know, which is the
+  // difference between "untracked" and "tracked but clean" that `ls-files` alone blurs.
+  return runGitOrNothing(cwd, ['ls-files', '--error-unmatch', '--', rel]) !== undefined;
+}
+
+/**
  * Whether one file has uncommitted working-tree changes (modified or staged-new), reported
  * by `git status --porcelain`. `false` means clean or not a repository; `undefined` means
  * git could not be consulted.

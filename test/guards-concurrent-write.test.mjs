@@ -16,6 +16,10 @@ import { digest } from './digest.test.mjs';
     writeFileSync(join(repo, 'todo.md'), '# todo\n');
     writeFileSync(join(repo, 'a.py'), 'print(1)\n');
     writeFileSync(join(repo, 'b.py'), 'print(2)\n');
+    // A tracked file whose name says nothing about being "source": the jurisdiction used to be
+    // a source-extension list, and a tracked fixture fell outside it (measured: a `.txt` probe
+    // created no claim, so neither the claim branch nor the dirty branch could ever fire).
+    writeFileSync(join(repo, 'fixture.txt'), 'baseline\n');
     initRepo(repo);
     execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
     execFileSync('git', ['commit', '-m', 'chore: init'], { cwd: repo, stdio: 'pipe' });
@@ -62,6 +66,32 @@ import { digest } from './digest.test.mjs';
     }
     assert.ok(!exs(join(claimDir, 'a.py.json')), 'a commit releases every claim');
     assert.ok(!exs(join(claimDir, 'b.py.json')), 'including claims held by other sessions');
+
+    // Jurisdiction is "project content", not "source-looking file name": a tracked `.txt`
+    // is claimed and protected, and an untracked artifact is not. Both halves matter — the
+    // point is not to claim *everything*, because `gitDirtyPath` calls an untracked file
+    // dirty and refusing those would refuse writes the agent legitimately repeats.
+    {
+      const { existsSync: exs3, readdirSync: rds3 } = await import('node:fs');
+      assert.equal(
+        cwGuard({ name: 'write', arguments: { file_path: join(repo, 'fixture.txt') }, agent: agentA }),
+        undefined,
+        'A may write a tracked .txt',
+      );
+      assert.ok(rds3(claimDir).includes('fixture.txt.json'), 'a tracked .txt gets a claim');
+      const refusedFixture = cwGuard({ name: 'write', arguments: { file_path: join(repo, 'fixture.txt') }, agent: agentB });
+      assert.equal(typeof refusedFixture, 'string', 'B is refused on the tracked .txt A claimed');
+      assert.ok(/已被会话/.test(refusedFixture) && /fixture\.txt/.test(refusedFixture), 'the refusal names that file and its holder');
+
+      writeFileSync(join(repo, 'build-output.txt'), 'generated\n');
+      assert.equal(
+        cwGuard({ name: 'write', arguments: { file_path: join(repo, 'build-output.txt') }, agent: agentB }),
+        undefined,
+        'an untracked artifact stays outside jurisdiction',
+      );
+      assert.ok(!rds3(claimDir).some((name) => name.startsWith('build-output')), 'no claim is created for an artifact');
+      assert.ok(exs3(join(repo, 'fixture.txt')), 'the fixture is still there');
+    }
 
     // A file outside the project is never claimed: scratch files in Temp or elsewhere must
     // not leave claims in this project's claim directory.

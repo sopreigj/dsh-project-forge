@@ -41,6 +41,7 @@ import {
   claimPath,
   displayPath,
   gitDirtyPath,
+  gitTracksPath,
   isInsideStateDir,
   readClaim,
   readIfPresent,
@@ -403,7 +404,6 @@ export function registerGuards(ctx, config, states) {
           const mode = config.concurrentWriteMode ?? 'both';
           const protectSource = mode === 'sourceFiles' || mode === 'both';
           if (!isDoc && !protectSource) return undefined;
-          if (!isDoc && !/\.(dart|py|js|mjs|ts|go|rs|java|kt|rb|php|c|cc|cpp|h|cs|sh|ps1)$/i.test(base)) return undefined;
           const agent = execution.agent;
           const cwd = agent?.session?.header?.cwd;
           if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
@@ -416,6 +416,16 @@ export function registerGuards(ctx, config, states) {
           // without it a scratch file on D: was claimed by a project living on C: (real
           // defect, 2026-10-14: a claim appeared for a file under %TEMP%).
           if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
+          // Jurisdiction widened past the source-extension list: a tracked file is project
+          // content whatever it is called (data, fixtures, config, notes), and leaving those
+          // out meant two sessions could silently overwrite each other on them — measured:
+          // a `.txt` probe created no claim at all, so neither the claim branch nor the dirty
+          // branch could ever fire for it. Untracked paths stay outside on purpose: a build
+          // artifact or a scratch draft is not shared state, and `gitDirtyPath` reports
+          // untracked files as dirty, so claiming them would refuse writes the agent legitimately
+          // repeats (`ls-files --error-unmatch` is what makes "tracked" decidable).
+          const isSource = /\.(dart|py|js|mjs|ts|go|rs|java|kt|rb|php|c|cc|cpp|h|cs|sh|ps1)$/i.test(base);
+          if (!isDoc && !isSource && !gitTracksPath(cwd, absolute)) return undefined;
           const self = agentIdentity(agent);
 
           // A working-tree change we do not own is always a blocker, even with no claim.

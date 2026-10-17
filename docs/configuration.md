@@ -49,7 +49,7 @@ code that implements it.
 | `sizeHardRatio` | `1.5` | Hard cap = the document's budget × this factor, used by `"ratchet"`. |
 | `clockFooter` | `true` | Append one line carrying the current time to a successful tool result. |
 | `clockFooterThrottleMs` | `600000` | Minimum interval between two such lines, per session. |
-| `concurrentWriteMode` | `"both"` | Which shared files the claim guard protects. |
+| `concurrentWriteMode` | `"both"` | Which shared files the claim guard protects. With `"both"` or `"sourceFiles"` it covers the four state documents, source files, and **any other file this project tracks**; with any other value, the state documents only. Untracked files (build artifacts, drafts) are never claimed. |
 | `claimStaleMs` | `600000` | How long a claim survives without its owner touching it. Expiry is the only cleanup this design relies on. |
 
 ## Notes

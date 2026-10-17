@@ -421,6 +421,7 @@ export function registerGuards(ctx, config, states) {
           // A working-tree change we do not own is always a blocker, even with no claim.
           const dirty = gitDirtyPath(cwd, absolute);
           let claim = readClaim(cwd, config, rel);
+          let tookOver = false;
           if (claim !== undefined && !claimFresh(claim, config)) {
             // Stale claim: its owner is gone (killed, crashed, or finished without commit).
             // Delete it and treat the file as unclaimed instead of leaving residue forever.
@@ -430,6 +431,7 @@ export function registerGuards(ctx, config, states) {
             const deadOwner = String(claim.owner ?? '');
             deleteClaim(cwd, config, rel);
             claim = undefined;
+            tookOver = true;
             const state = states.get(agent.id);
             if (state !== undefined && deadOwner.length > 0 && deadOwner !== self) {
               ctx.logger?.info?.(
@@ -449,10 +451,17 @@ export function registerGuards(ctx, config, states) {
               '先协调（或请它提交 —— 一次成功提交会释放所有认领），然后重试。见 §12。',
             ].join(' ');
           }
-          if (dirty === true && claim?.owner !== self) {
+          // The dirty check is the catch-all for changes whose writer this guard never saw: a hand
+          // edit, a script, a tool it does not intercept. Provenance is therefore unknown, and the
+          // only safe answer is "reconcile first". A stale claim is the opposite case — we KNOW a
+          // session went quiet holding this file — and §12.3 tells the taker-over to re-read it and
+          // carry on. Re-refusing it here made the file uneditable by anyone and left the refusal
+          // advising a step ("re-read it, reconcile, then write") that could never succeed.
+          if (dirty === true && claim?.owner !== self && !tookOver) {
             return [
               `项目锻造模式拒绝写入 \`${rel}\`：它还有未提交的改动。`,
               '多半是另一个会话改过它、还没提交；请重新读一遍、对账之后再写。',
+              `若确认它不是别人的在办工作，就先为它建一个认领（\`${relative(cwd, claimPath(cwd, config, rel)).replace(/\\/g, '/')}\`）再写，或者先提交你自己那边的改动。`,
               '见协议 §12。',
             ].join(' ');
           }

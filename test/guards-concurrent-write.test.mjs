@@ -206,3 +206,64 @@ import { digest } from './digest.test.mjs';
     console.log('in-flight digest: OK');
   }
 
+  // ── A dead session's uncommitted work must be takeable, not a deadlock ───────
+  // The claim above was taken over on a CLEAN file. The case the takeover exists for is the
+  // opposite one: the session went quiet between writing the file and committing it, so the file
+  // is dirty AND its claim is stale. §12.3 promises that path ("re-read the file, then write"),
+  // so the guard must not refuse it — refusing forever leaves the file uneditable by anyone, and
+  // the refusal's own advice ("re-read it, reconcile, then write") can never be carried out.
+  {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const { appendFileSync } = await import('node:fs');
+    const repo = mkdtempSync(join(tmpdir(), 'forge-takeover-dirty-'));
+    writeFileSync(join(repo, 'a.py'), 'print(1)\n');
+    // The digest context renders nothing for a directory that holds no contract document, so a
+    // fixture that wants to read the in-flight block must look like a project (T49's sibling).
+    writeFileSync(join(repo, 'done.md'), '# done\nbaseline\n');
+    writeFileSync(join(repo, 'plan.md'), '# plan\nbaseline\n');
+    writeFileSync(join(repo, 'todo.md'), '# todo\nbaseline\n');
+    initRepo(repo);
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'chore: init'], { cwd: repo, stdio: 'pipe' });
+
+    const { ctx: dirtyCtx, record: dirtyRecord } = makeCtx();
+    plugin.apply(dirtyCtx, standard.validate({
+      injectOnCompaction: false,
+      digestRefreshMs: 5,
+      claimStaleMs: 1000,
+    }).value);
+    const deadHex = `${Date.now().toString(16).padStart(8, '0')}-dddd-4ddd-8ddd-dddddddddddd`;
+    const liveHex = `${(Date.now() + 1).toString(16).padStart(8, '0')}-eeee-4eee-8eee-eeeeeeeeeeee`;
+    const { agent: dead } = createdAgent(dirtyRecord, repo, `session-${deadHex}`);
+    const { agent: live, contexts: liveContexts } = createdAgent(dirtyRecord, repo, `session-${liveHex}`);
+    const cwGuard = dirtyRecord.guards[dirtyRecord.guards.length - 1];
+
+    // The dead session claims a.py by writing it, then really modifies it and goes quiet.
+    assert.equal(cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: dead }), undefined, 'the dead session may write its file');
+    appendFileSync(join(repo, 'a.py'), 'print(2)\n');
+    await sleep(1100);
+
+    const taken = cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: live });
+    assert.equal(taken, undefined, "a dead session's uncommitted file is takeable after re-reading (§12.3)");
+    const claim = JSON.parse(readFileSync(join(repo, 'private', '.forge-claims', 'a.py.json'), 'utf8'));
+    assert.equal(claim.owner, live.session.header.id, 'the claim now belongs to the session that took over');
+    await sleep(15);
+    assert.ok(liveContexts[0].text({}).includes('已接手'), 'the digest announces the takeover so the next step re-reads the file');
+
+    // The owner may keep writing its own dirty file (its claim is live and its own).
+    appendFileSync(join(repo, 'a.py'), 'print(3)\n');
+    assert.equal(cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: live }), undefined, 'the new owner may keep writing its own uncommitted file');
+
+    // The catch-all stays: a dirty file NOBODY claims has provenance the guard cannot know
+    // (a hand edit, a script, a write through a tool the guard does not see), so it is refused.
+    writeFileSync(join(repo, 'b.py'), 'print(9)\n');
+    const orphan = cwGuard({ name: 'write', arguments: { file_path: join(repo, 'b.py') }, agent: live });
+    assert.equal(typeof orphan, 'string', 'a dirty file of unknown provenance is still refused');
+    assert.ok(/未提交的改动/.test(orphan), 'and the refusal says why');
+    assert.ok(/认领/.test(orphan), 'and it names the way forward (a claim on that file)');
+
+    rmSync(repo, { recursive: true, force: true });
+    console.log('stale-claim takeover over uncommitted work: OK');
+  }
+
+

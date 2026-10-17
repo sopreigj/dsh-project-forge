@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-forge",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Project Forge — a DeepSeek Harness agent preset that keeps a project recoverable, traceable, and continuable: local-only git, four contract documents plus append-only records, layout and naming discipline, compaction recovery, and write guards that hold even when the model does not cooperate.",
   "type": "module",
   "main": "./plugin/index.js",

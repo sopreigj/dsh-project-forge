@@ -7,6 +7,7 @@
 #        · check-consistency.mjs     文档与代码：配置参考表 ↔ schema；两份技能副本逐字节相同
 #        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard（无源码树时自跳过）
 #        · check-public-surface.mjs  公开面：用本模式自己的隐私守卫检查它自己的仓库
+#        · check-changelog.mjs      更新日志：package.json 的版本必须有条目、顶部留 Unreleased
 #        · check-runtime.mjs         运行时：内置技能的 frontmatter、customSkillDirs 计算出的目标
 #                                    （--repo 可指向第二个 bundle，所以 review/ 也跑同一组检查）
 #          （它还能解码会话日志、核对生效预设与"装的是哪一份"，那些要另传 --session/--copy）
@@ -47,6 +48,7 @@ Invoke-Check '一致性（配置参考表 ↔ schema；技能副本）' "$dev\re
 $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
+Invoke-Check '更新日志（package.json 的版本必须有条目）' "$dev\release\check-changelog.mjs" @()
 Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
 Invoke-Check '运行时·review bundle（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @('--repo', "$dev\review")
 

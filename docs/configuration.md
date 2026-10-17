@@ -38,7 +38,7 @@ code that implements it.
 | `injectOnCompaction` | `true` | Fold one recovery message carrying the digest into the first step after a real compaction. |
 | `recoveryMinTurnStep` | `1` | Earliest step of a turn that may carry the recovery message, which bounds it to one per turn. |
 | `guardLocalGit` | `true` | Refuse shell commands that publish the repository or destroy local history. |
-| `guardCommitCheckpoint` | `true` | Refuse `git commit` until a state document has been updated (and when the digest can see commits the documents do not mention). |
+| `guardCommitCheckpoint` | `true` | Refuse `git commit` until a state document has been updated (and when the digest can see commits the documents do not mention). The refusal names the files the session did touch, and the contract documents that would have counted. |
 | `guardLayoutCheckpoint` | `true` | Refuse a commit whose layout check was not acknowledged. |
 | `guardSecrets` | `true` | Refuse a commit that would record a credential file outside the state boundary. |
 | `guardPrivacyBoundary` | `true` | Refuse a commit whose public files leak this machine's home path, reach into the boundary from source, or carry a high-confidence secret literal. |

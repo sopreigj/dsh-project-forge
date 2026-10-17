@@ -150,6 +150,13 @@ export function registerGuards(ctx, config, states) {
   }
 
 
+// Last two segments of a normalized path, so a refusal message can name a file without
+// repeating the absolute prefix the model already knows.
+function shortPath(path) {
+  const parts = path.split('/');
+  return parts.slice(-2).join('/');
+}
+
 // Common prefix length of two strings, used only by the append-only refusal so it can say
 // *where* the write stopped matching instead of leaving the model to guess.
 function commonPrefixLength(a, b) {
@@ -287,11 +294,21 @@ function commonPrefixLength(a, b) {
           // the surface generation, which also changes for pruning and spill.
           const stale = state.compacted === true || state.unrecordedCommits;
           if (!stale) return undefined;
+          // "Update a contract document" is cheap to say and expensive to guess: a session that
+          // has been editing source files all along reads its own writes as progress. The guard
+          // knows both lists, so it names them — what was touched, and what would have counted.
+          const touched = state.touchedDocs instanceof Set ? [...state.touchedDocs] : [];
+          const shown = touched.length === 0
+            ? '本会话还没有用 write/edit 改过任何文件'
+            : `本会话用 write/edit 改过的是 ${touched.slice(0, 4).map(shortPath).join(', ')}`
+              + `${touched.length > 4 ? `, …（共 ${touched.length} 个）` : ''}`;
+          const expected = config.digestFiles.join(', ');
           return [
             '项目锻造模式拒绝这次 `git commit`：这不是一个一致状态的检查点。',
             state.compacted === true
               ? '本会话被压缩过，此后没有任何合同文档被更新。'
               : '仓库里有状态文档没有提到的提交。',
+            `${shown}；能解开这条的只有合同文档：${expected}——在其中任一份上记下当前状态即可。`,
             '更新 `private/done.md`（以及随之变化的 `private/todo.md` / `private/plan.md`）：记下当前状态，',
             '与 `git status`、`git log` 对账，把不符之处写进 Drift 一节，然后再提交。',
             '两点容易踩：**这条拒绝作用于整条命令**——把改文件与提交写在同一条 shell 调用里时，改文件根本不会执行，',

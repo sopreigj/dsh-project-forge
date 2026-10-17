@@ -31,13 +31,32 @@
   assert.equal(typeof refused, 'string', 'a post-compaction commit is refused');
   assert.ok(refused.includes('不是一个一致状态的检查点'), 'refusal explains why');
   assert.ok(refused.includes('done.md'), 'refusal names the document to update');
-
-  // Writing a state document disarms it.
+  // The guard also says *why the writes so far did not count*: a session that has been editing
+  // source files reads its own writes as progress, so the refusal names both lists.
+  assert.ok(
+    refused.includes('本会话还没有用 write/edit 改过任何文件'),
+    `refusal reports the (empty) list of touched files: ${refused}`,
+  );
   const touchListener = guardRecord.listeners.find((entry) => entry.name === 'tools/result');
-  touchListener.handler(
-    { name: 'edit', arguments: { file_path: join(project, 'done.md') }, agent: guardAgent },
+  const touch = (filePath) => touchListener.handler(
+    { name: 'edit', arguments: { file_path: filePath }, agent: guardAgent },
     { isError: false },
   );
+  const sourceFile = join(project, 'plugin', 'guards', 'register.js');
+  touch(sourceFile);
+  const stillRefused = commitGuard(commit(guardAgent));
+  assert.equal(typeof stillRefused, 'string', 'editing a source file does not disarm the guard');
+  assert.ok(
+    stillRefused.includes('guards/register.js'),
+    `refusal names what was touched instead: ${stillRefused}`,
+  );
+  assert.ok(
+    stillRefused.includes('能解开这条的只有合同文档'),
+    'and contrasts it with the documents that would count',
+  );
+
+  // Writing a state document disarms it.
+  touch(join(project, 'done.md'));
   assert.equal(commitGuard(commit(guardAgent)), undefined, 'the checkpoint guard clears after a document update');
 
   // Unrelated tools and non-commit commands are untouched.

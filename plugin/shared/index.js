@@ -402,3 +402,14 @@ export function stripQuoted(text) {
     .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
     .replace(/(?:^|\s)#[^\n]*/g, ' ');
 }
+
+/**
+ * A short, recognisable form of a session id for error messages. `owner.slice(0, 8)` was a
+ * real bug: every session id starts with `session-`, so the slice showed `session-` and the
+ * owner was invisible in the refusal (an anonymous "ghost" blocker).
+ * @param owner - the claim owner's session id.
+ * @returns the UUID portion, truncated to 8 characters.
+ */
+export function shortId(owner) {
+  return String(owner).replace(/^session-/, '').slice(0, 8);
+}

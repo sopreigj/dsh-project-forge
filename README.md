@@ -99,7 +99,7 @@ node release/check-public-surface.mjs        # the mode's privacy guard, applied
 node release/check-runtime.mjs               # skill frontmatter + the customSkillDirs target
 ```
 
-The plugin imports only Node builtins — profile-installed bundles resolve no third-party packages. The hand-written Standard Schema in `plugin/schema.js` implements the exact `~standard.validate` interface Cordis requires (the official docs use `@deepseek-ai/schemastery`; a hand-written schema is used here to keep the bundle dependency-free).
+The plugin imports only Node builtins — profile-installed bundles resolve no third-party packages. The hand-written Standard Schema in `plugin/config/schema.js` implements the exact `~standard.validate` interface Cordis requires (the official docs use `@deepseek-ai/schemastery`; a hand-written schema is used here to keep the bundle dependency-free).
 
 `release/` holds the release tooling: `check-public-surface.mjs` is the check above,
 `check-consistency.mjs` keeps the documentation and the two copies of the bundled skill in sync

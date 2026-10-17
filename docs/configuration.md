@@ -13,7 +13,7 @@ Override a field in a profile's `cordis.patch.yml`:
 ```
 
 The **default column holds a JSON literal** on purpose: `release/check-consistency.mjs` parses it
-and compares it field by field against `plugin/schema.js`, so this table cannot drift from the
+and compares it field by field against `plugin/config/schema.js`, so this table cannot drift from the
 code that implements it.
 
 | Field | Default | Meaning |

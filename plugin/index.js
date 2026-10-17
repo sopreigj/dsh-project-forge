@@ -54,7 +54,7 @@
  * - Compaction is detected by comparing `session.surface.replaceGeneration` across
  *   steps, with no session-log accessor in the path.
  * - A profile-installed bundle resolves no DSH packages, so this file imports only Node
- *   builtins and ./schema.js.
+ *   builtins and ./config/schema.js.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -63,7 +63,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { Config } from './schema.js';
+import { Config } from './config/schema.js';
 import { PROTOCOL, RECOVERY } from './protocol/index.js';
 import { applyClock } from './clock/index.js';
 

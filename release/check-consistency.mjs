@@ -2,7 +2,7 @@
  * release/check-consistency.mjs — the two internal duplications that must not drift.
  *
  * 1. `docs/configuration.md` is the user-facing reference for every config field, and
- *    `plugin/schema.js`'s `DEFAULTS` is the code that implements them. Those two were written by
+ *    `plugin/config/schema.js`'s `DEFAULTS` is the code that implements them. Those two were written by
  *    hand from the same facts once, and drifted: the README still documented `digestTailLimits`
  *    after the schema renamed it, which is exactly what broke a session resume on 2026-10-16.
  *    The check parses the table's default column as JSON and compares it to `DEFAULTS`, so a
@@ -28,7 +28,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULTS } from '../plugin/schema.js';
+import { DEFAULTS } from '../plugin/config/schema.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];

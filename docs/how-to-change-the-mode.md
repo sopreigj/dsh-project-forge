@@ -67,7 +67,7 @@ AssertionError [ERR_ASSERTION]: the local-git guard is registered
 
 四处要同步，缺一处就会被机械检查抓住：
 
-1. **`plugin/schema.js`**：字段 + 默认值 + JSDoc。`DEFAULTS` 是**文档默认值的唯一来源**，`docs/configuration.md` 拿它比对。
+1. **`plugin/config/schema.js`**：字段 + 默认值 + JSDoc。`DEFAULTS` 是**文档默认值的唯一来源**，`docs/configuration.md` 拿它比对。
 2. **`cordis.patch.yml`**：只有当你要在 preset 里用**非默认值**时才写。行配置只写非默认项，多写一行就是噪音。
 3. **`docs/configuration.md`** 的表格：一行，默认值写成 **JSON 字面量**。
 4. **`plugin/index.test.mjs`**：默认值断言（字段改名时，patch↔schema 守卫也会在这里拦你）。

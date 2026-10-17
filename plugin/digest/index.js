@@ -51,7 +51,8 @@ export const BUDGET_HEADING = '## ⚠ 超出预算（不截断，只提示）';
  */
 export function renderInFlight(cwd, config, selfId, takeovers) {
   const now = Date.now();
-  const lines = [];
+  const live = [];
+  const expired = [];
   for (const claimFile of claimFiles(cwd, config)) {
     let claim;
     try {
@@ -59,14 +60,21 @@ export function renderInFlight(cwd, config, selfId, takeovers) {
     } catch {
       continue;
     }
-    if (!claimFresh(claim, config)) continue;
     const rel = typeof claim.path === 'string' && claim.path.length > 0
       ? claim.path
       : basename(claimFile).replace(/\.json$/, '');
     const idleMinutes = Math.max(0, Math.round((now - claim.time) / 60000));
     const mine = selfId !== undefined && String(claim.owner) === String(selfId);
-    lines.push(`- \`${rel}\` ← 会话 ${shortId(claim.owner)}${mine ? '（本会话）' : ''}，静默 ${idleMinutes} 分钟`);
+    // An expired claim is not "nothing in flight": the owner may have been killed. Saying so is
+    // the whole point of a derived view — otherwise the reader sees nothing and only learns about
+    // the abandoned claim by tripping over it when it happens to write that file.
+    if (!claimFresh(claim, config)) {
+      expired.push(`- ⚠ \`${rel}\` 的认领已过期（原属会话 ${shortId(claim.owner)}，静默 ${idleMinutes} 分钟）——可接手，动手前先重读该文件`);
+      continue;
+    }
+    live.push(`- \`${rel}\` ← 会话 ${shortId(claim.owner)}${mine ? '（本会话）' : ''}，静默 ${idleMinutes} 分钟`);
   }
+  const lines = live.concat(expired);
   for (const takeover of takeovers ?? []) {
     lines.push(
       `- 已接手 \`${takeover.path}\`：原属会话 ${shortId(takeover.owner)} 的认领已过期——动手前先重读该文件`,

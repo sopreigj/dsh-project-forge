@@ -932,7 +932,7 @@ const PROJECT_MARKERS = {
     }).value);
     const hexA = `${Date.now().toString(16).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
     const hexB = `${(Date.now() + 1).toString(16).padStart(8, '0')}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`;
-    const { agent: writer } = createdAgent(ifRecord, repo, `session-${hexA}`);
+    const { agent: writer, contexts: writerContexts } = createdAgent(ifRecord, repo, `session-${hexA}`);
     const { agent: reader, contexts: readerContexts } = createdAgent(ifRecord, repo, `session-${hexB}`);
     const cwGuard = ifRecord.guards[ifRecord.guards.length - 1];
     const digestOfReader = () => {
@@ -957,9 +957,10 @@ const PROJECT_MARKERS = {
     assert.ok(seen.includes('静默 0 分钟'), 'the block reports how long the owner has been quiet');
     assert.ok(!seen.includes('（本会话）'), "another session's claim is not marked as my own");
 
-    // The owner's own digest marks its claim, so it knows it has work in flight.
-    const ownerText = writer.session.header.id;
-    assert.ok(ownerText.length > 0, 'sanity');
+    // The owner's own digest marks its claim as its own, so it knows it has work in flight.
+    const ownerSeen = writerContexts[0].text({});
+    assert.ok(ownerSeen.includes('`a.py`'), "the owner's digest lists its own claim");
+    assert.ok(ownerSeen.includes('（本会话）'), "the owner's own claim is marked as such");
 
     // The second session is refused while the claim is live.
     assert.equal(
@@ -968,12 +969,23 @@ const PROJECT_MARKERS = {
       'a live claim still blocks the second writer',
     );
 
-    // The owner goes quiet past `claimStaleMs`: the claim is taken over and the digest says who
-    // it came from and what to do about it — a guard can only refuse or allow, never annotate.
+    // The owner goes quiet past `claimStaleMs` but nobody has tried to write the file yet: the
+    // digest must already say the claim is takeable. Otherwise a session sees nothing in flight
+    // and only learns the claim was abandoned by tripping over it — the failure this view exists
+    // to prevent.
     writeFileSync(
       join(repo, 'private', '.forge-claims', 'a.py.json'),
       JSON.stringify({ owner: writer.session.header.id, time: Date.now() - 5000, path: 'a.py' }),
     );
+    await sleep(15);
+    const staleSeen = digestOfReader();
+    assert.ok(staleSeen.includes('`a.py`'), 'an expired claim is still listed');
+    assert.ok(staleSeen.includes('已过期'), 'and is marked as expired');
+    assert.ok(staleSeen.includes('可接手'), 'with the takeover instruction');
+    assert.ok(staleSeen.includes(hexA.slice(0, 8)), 'naming the session that went quiet');
+
+    // Only now does a write take it over, and the digest says who it came from and what to do —
+    // a guard can only refuse or allow, never annotate.
     assert.equal(
       cwGuard({ name: 'write', arguments: { file_path: join(repo, 'a.py') }, agent: reader }),
       undefined,
@@ -984,6 +996,14 @@ const PROJECT_MARKERS = {
     assert.ok(afterTakeover.includes('已接手'), 'the digest announces the takeover');
     assert.ok(afterTakeover.includes(hexA.slice(0, 8)), 'the notice names the session that died');
     assert.ok(afterTakeover.includes('先重读该文件'), 'the notice says what to do next');
+
+    // Pinning what was observed live (2026-10-16): the claim outlives the file it names. Deleting
+    // the claimed file does NOT release the claim — only a commit or the staleness window does.
+    rmSync(join(repo, 'a.py'), { force: true });
+    assert.ok(
+      existsSync(join(repo, 'private', '.forge-claims', 'a.py.json')),
+      'deleting the claimed file does not release its claim',
+    );
 
     rmSync(repo, { recursive: true, force: true });
     console.log('in-flight digest: OK');

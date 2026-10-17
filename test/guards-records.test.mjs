@@ -25,6 +25,21 @@
   const refusal = refusalFor('{"id":"J2","kind":"checkpoint"}\n');
   assert.equal(typeof refusal, 'string', 'a write that drops the records already on disk is refused');
   assert.ok(refusal.includes('journal.jsonl'), 'the refusal names the file');
+  // The refusal has to be actionable: it says where the draft stopped matching, and what the two
+  // sides look like there. Without this the model can only guess which record it lost.
+  // `{"id":"J1"…` vs `{"id":"J2"…` share `{"id":"J` — eight characters — so that is the offset.
+  assert.ok(refusal.includes('从第 8 个字符（第 1 行）起不一致'), `the refusal locates the divergence: ${refusal}`);
+  assert.ok(refusal.includes('「1","kind":"checkpoint"}⏎」'), 'and quotes what is on disk at that point');
+  assert.ok(refusal.includes('「2","kind":"checkpoint"}⏎」'), 'and quotes what this write would have put there');
+  // A divergence deeper in the file is located at its real offset, not just "somewhere".
+  const tail = '{"id":"J1"}\n{"id":"J2"}\n';
+  writeFileSync(recordPath, tail);
+  const midRefusal = refusalFor('{"id":"J1"}\n{"id":"JX"}\n');
+  assert.ok(
+    midRefusal.includes('从第 20 个字符（第 2 行）起不一致'),
+    `the offset and the line are the real ones: ${midRefusal}`,
+  );
+  writeFileSync(recordPath, existing);
   assert.equal(
     refusalFor(`${existing}{"id":"J2","kind":"checkpoint"}\n`),
     undefined,

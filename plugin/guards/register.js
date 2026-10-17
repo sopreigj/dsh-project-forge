@@ -150,6 +150,15 @@ export function registerGuards(ctx, config, states) {
   }
 
 
+// Common prefix length of two strings, used only by the append-only refusal so it can say
+// *where* the write stopped matching instead of leaving the model to guess.
+function commonPrefixLength(a, b) {
+  const limit = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < limit && a[index] === b[index]) index += 1;
+  return index;
+}
+
   // ── Guard: append-only records ───────────────────────────────────────────────
   // `journal.jsonl` and `tortuous.jsonl` are read as "one record per line, appended only"
   // (§4.0.2). A write that does not keep the previous text as a prefix breaks that promise:
@@ -169,10 +178,21 @@ export function registerGuards(ctx, config, states) {
           const before = readIfPresent(path);
           if (before === undefined || before.length === 0) return undefined;
           if (content.startsWith(before)) return undefined;
+          // The refusal has to be actionable: "keep the old text as a prefix" leaves the model
+          // guessing where its draft went wrong, and the record file is exactly the place where
+          // guessing costs records. The guard can compute the divergence, so it says it.
+          const shared = commonPrefixLength(before, content);
+          const line = before.slice(0, shared).split('\n').length;
+          const excerpt = (text) => {
+            const cut = text.slice(shared, shared + 40).replace(/\n/g, '⏎');
+            return cut.length < text.length - shared ? `${cut}…` : cut;
+          };
           return [
             `项目锻造模式拒绝这次写入：\`${path}\` 是只追加的记录文件。`,
             '它的每一行都被当作一条记录读，digest 的索引也由它们派生，所以',
             '不保留磁盘上已有文本作为前缀的写入会静默丢记录。',
+            `从第 ${shared} 个字符（第 ${line} 行）起不一致：磁盘上在这里写着`,
+            `「${excerpt(before)}」，而你这次写的是「${excerpt(content)}」。`,
             '请先写回原有内容、再追加新记录（或直接追加到文件末尾），然后重试。',
           ].join(' ');
         }),

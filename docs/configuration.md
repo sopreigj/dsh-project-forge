@@ -43,7 +43,7 @@ code that implements it.
 | `guardSecrets` | `true` | Refuse a commit that would record a credential file outside the state boundary. |
 | `guardPrivacyBoundary` | `true` | Refuse a commit whose public files leak this machine's home path, reach into the boundary from source, or carry a high-confidence secret literal. |
 | `guardConcurrentWrite` | `true` | Refuse to write a shared file another live session has claimed; take over a claim whose owner went quiet. |
-| `guardAppendOnly` | `true` | The record files may only grow: a write that does not keep the text already on disk as its prefix is refused. |
+| `guardAppendOnly` | `true` | The record files may only grow: a write that does not keep the text already on disk as its prefix is refused, and the refusal localizes the divergence — the offset and line where the draft stopped matching, plus both sides' text at that point. |
 | `guardMalformedToolCall` | `true` | Rewrite an empty tool-call id from the model stream into a synthetic one (an empty id freezes the session file mid-turn). The repair is logged, and the digest then reports it — the repaired call reaches the model as an unknown tool, so without that line the cause would look like a missing tool. |
 | `sizeLimitMode` | `"warn"` | `"warn"` only prints the digest warning line. `"ratchet"` additionally refuses a commit that makes an **already-over-cap** document bigger; shrinking and splitting always pass. |
 | `sizeHardRatio` | `1.5` | Hard cap = the document's budget × this factor, used by `"ratchet"`. |

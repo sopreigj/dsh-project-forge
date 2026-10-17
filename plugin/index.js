@@ -70,6 +70,8 @@ import {
   IN_FLIGHT_HEADING,
   BUDGET_HEADING,
   REPAIR_HEADING,
+  NO_MEMORY_HEADING,
+  renderNoMemory,
   renderInFlight,
   renderRepairs,
   renderTortuousIndex,
@@ -214,6 +216,17 @@ export function apply(ctx, config) {
 
     if (parts.length === 0) {
       state.status = state.text === undefined ? 'missing' : 'stale';
+      // Nothing was readable, so the digest would be absent — which reads as "this project
+      // has no state to load" rather than "the state is somewhere else". Say what came up
+      // empty; the recovery message already does this, the per-turn path did not.
+      const looked = [
+        ...config.digestFiles.map((name) => displayPath(cwd, resolveStateFile(cwd, config, name).absolute)),
+        displayPath(cwd, resolveStateFile(cwd, config, config.tortuousFile).absolute),
+        ...(config.stewardFile === false
+          ? []
+          : stewardCandidates(cwd, config).map((path) => displayPath(cwd, path))),
+      ];
+      state.text = [DIGEST_HEADING, '', NO_MEMORY_HEADING, '', renderNoMemory(looked, config.stateDir)].join('\n');
       return;
     }
 

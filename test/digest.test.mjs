@@ -91,5 +91,57 @@
   })(), 'a dsh-style strict scan of the digest does not throw');
   console.log('digest braces: OK');
 
+  // ── An empty project says why, instead of saying nothing ──────────────────────
+  // "The state lives elsewhere" and "this project has no state yet" are both an absent
+  // digest, and the comfortable reading — start from a blank slate — is the wrong one.
+  // The recovery message already explained this; the per-turn path used to stay silent.
+  const emptyDir = mkdtempSync(join(tmpdir(), 'steward-empty-'));
+  const { ctx: emptyCtx, record: emptyRecord } = makeCtx();
+  plugin.apply(emptyCtx, standard.validate({ injectOnCompaction: false }).value);
+  const { contexts: emptyContexts } = createdAgent(emptyRecord, emptyDir, 'session-empty-project');
+  const emptyText = emptyContexts[0].text({});
+  assert.ok(
+    emptyText.includes('## ⚠ 还没有项目记忆') && emptyText.includes('读过的位置都是空的'),
+    'an empty project gets the explanation block, not a silent digest',
+  );
+  for (const name of ['plan.md', 'done.md', 'todo.md', 'tortuous.jsonl', 'steward.md']) {
+    assert.ok(emptyText.includes(name), `the explanation names ${name}`);
+  }
+  assert.ok(emptyText.includes('stateDir'), 'and it says where to check for a wrong directory');
+  assert.ok(!emptyText.includes(PROJECT_MARKERS.plan), 'no document text leaks in from elsewhere');
+  rmSync(emptyDir, { recursive: true, force: true });
+  console.log('empty project digest: OK');
+
+  // ── The negative-knowledge index must never print a line that says nothing ────
+  // The index is the only reason a model opens the record file, so a blank line spends
+  // budget and still leaves no reason to look. Records that follow the deviation shape
+  // carry their one-liner in `what`; a record with no one-liner at all must say so.
+  const idxDir = mkdtempSync(join(tmpdir(), 'steward-index-'));
+  writeFileSync(join(idxDir, 'tortuous.jsonl'), [
+    JSON.stringify({ id: 'R1', kind: 'route', conclusion: '一句结论' }),
+    JSON.stringify({ id: 'D1', kind: 'deviation', what: '这条偏差只写了 what 字段' }),
+    JSON.stringify({ id: 'D2', kind: 'deviation' }),
+    JSON.stringify({ id: 'R2', kind: 'route', title: 'x'.repeat(400) }),
+  ].join('\n') + '\n');
+  const { ctx: idxCtx, record: idxRecord } = makeCtx();
+  plugin.apply(idxCtx, standard.validate({ injectOnCompaction: false }).value);
+  const { contexts: idxContexts } = createdAgent(idxRecord, idxDir, 'session-index');
+  const idxText = idxContexts[0].text({});
+  assert.ok(
+    idxText.includes('- D1（偏差）这条偏差只写了 what 字段'),
+    'a record with no title falls back to the one-liner its own shape carries',
+  );
+  assert.ok(
+    idxText.includes('缺 title/conclusion'),
+    'a record with nothing to summarise says so instead of printing a blank line',
+  );
+  const idxLines = idxText.split('\n').filter((line) => /^- [RD]\d+（/.test(line));
+  assert.ok(idxLines.length >= 4, 'every record made it into the index');
+  for (const line of idxLines) {
+    assert.ok(line.length <= 170, `index lines are bounded (got ${line.length}): ${line.slice(0, 40)}…`);
+  }
+  rmSync(idxDir, { recursive: true, force: true });
+  console.log('negative-knowledge index summarises every record: OK');
+
 
 export { digest };

@@ -56,6 +56,30 @@ export function renderRepairs(count) {
   return `- 本会话已修复 **${count}** 个畸形工具调用（模型写出了坏掉的 function 标签，空 call id 被换成合成 id，所以那个调用会以 unknown tool 失败）。重试前先检查是不是标签写坏了，不要重复同一个形状。`;
 }
 
+/** Heading of the block that explains an empty digest. */
+export const NO_MEMORY_HEADING = '## ⚠ 还没有项目记忆';
+
+/**
+ * Explain an empty digest: what was read, and what an empty read does *not* mean.
+ *
+ * "This project keeps its state elsewhere" and "this project has no state yet" look identical
+ * from inside the prompt — both are nothing at all — and the wrong reading is the comfortable
+ * one: start from a blank slate and skip §11. The recovery message already says this much
+ * ("the state documents could not be read"), but the ordinary per-turn path said nothing, so a
+ * fresh project lost the explanation exactly when it was needed. One block, and only when
+ * nothing at all was readable, so a healthy project pays nothing for it.
+ *
+ * @param looked - display paths that were read and came up empty.
+ * @param stateDir - the configured boundary, so a wrong-directory read is diagnosable.
+ */
+export function renderNoMemory(looked, stateDir) {
+  return [
+    `- 读过的位置都是空的：${looked.map((path) => `\`${path}\``).join('、')}`,
+    `- 这不等于"这个项目没有状态"——先按协议 §11 把状态建起来（四份合同 + 记录文件）再动代码`,
+    `- 若这些文件确实存在：核对会话的工作目录，以及 \`stateDir\` 是否指向别处（当前为 \`${stateDir}\`）`,
+  ].join('\n');
+}
+
 /**
  * Render the in-flight block: every live claim in this project plus the takeovers this session
  * just performed. Expired claims are left out — the guard deletes them when it next touches the
@@ -141,10 +165,15 @@ export function tortuousIndexLine(record) {
   const id = typeof record.id === 'string' ? record.id : undefined;
   if (id === undefined) return undefined;
   const kind = record.kind === 'deviation' ? '偏差' : '失败路线';
-  const headline = typeof record.conclusion === 'string' && record.conclusion.length > 0
-    ? record.conclusion
-    : typeof record.title === 'string' ? record.title : '';
-  return `- ${id}（${kind}）${headline}`;
+  // One line per record is what makes the file discoverable at all, so a line that says nothing
+  // is worse than useless: it spends index budget and still leaves the reader no reason to open
+  // the file. Fall back to the deviation shape's own one-line field (`what`), then say so loudly.
+  const headline = [record.conclusion, record.title, record.what, record.summary]
+    .find((field) => typeof field === 'string' && field.length > 0)
+    ?? '⚠ 这条记录缺 title/conclusion——索引读不出它讲什么，直接打开文件看';
+  // Bounded: the index has its own byte budget, so one verbose record must not eat it.
+  const bounded = headline.length > 140 ? `${headline.slice(0, 139)}…` : headline;
+  return `- ${id}（${kind}）${bounded}`;
 }
 
 /**

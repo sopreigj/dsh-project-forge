@@ -30,6 +30,8 @@ import { fileURLToPath } from 'node:url';
 
 import { DEFAULTS } from '../plugin/config/schema.js';
 
+import { spawnSync } from 'node:child_process';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
 
@@ -155,9 +157,40 @@ for (const doc of PUBLIC_DOCS) {
     });
 }
 
+// ── 5. every script under release/ must at least parse ────────────────────
+// This exists because a syntax error in one of them reached a real release run: nothing in the
+// suite imports these scripts, so nothing had ever parsed them. `node --check` is enough for the
+// .mjs ones; the PowerShell file is parsed with its own AST parser, and when no PowerShell host is
+// on PATH the section says so instead of pretending to have checked it.
+const releaseDir = join(root, 'release');
+let parsedScripts = 0;
+let powershellSkips = 0;
+for (const entry of readdirSync(releaseDir).sort()) {
+  const file = join(releaseDir, entry);
+  if (entry.endsWith('.mjs') || entry.endsWith('.cjs') || entry.endsWith('.js')) {
+    const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      const reason = (result.stderr ?? '').trim().split('\n').slice(0, 2).join(' / ');
+      failures.push(`release/${entry} 语法不通过：${reason}`);
+    }
+    parsedScripts += 1;
+  } else if (entry.endsWith('.ps1')) {
+    const probe = spawnSync('pwsh', ['-NoProfile', '-Command',
+      `$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile('${file.replace(/'/g, "''")}',[ref]$null,[ref]$e);if($e.Count){$e[0].Message;exit 1}`],
+    { encoding: 'utf8', shell: false });
+    if (probe.error || probe.status === null) {
+      powershellSkips += 1;
+    } else {
+      if (probe.status !== 0) failures.push(`release/${entry} 语法不通过：${(probe.stdout ?? probe.stderr ?? '').trim().split('\n')[0]}`);
+      parsedScripts += 1;
+    }
+  }
+}
+if (!existsSync(releaseDir)) failures.push('release/ 目录不存在');
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(`✗ ${failure}`);
   console.error(`\nconsistency: ${failures.length} 处不一致`);
   process.exit(1);
 }
-console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词；文档 ${docPaths} 处路径引用真实存在）`);
+console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词；文档 ${docPaths} 处路径引用真实存在；release/ 下 ${parsedScripts} 个脚本可解析${powershellSkips ? `，${powershellSkips} 个 .ps1 因本机没有 PowerShell 未检查` : ''}）`);

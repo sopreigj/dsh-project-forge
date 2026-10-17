@@ -29,30 +29,40 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readSourceText, sourceRef } from './source-truth.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Variables the agent loop registers globally, read out of the harness source.
+ *
+ * With `--tag` the blob of that commit is read instead of the working tree: a developer
+ * checkout is usually dirty, and "what the installed harness registers" is a property of the
+ * release, not of whatever is being edited next to it.
  */
 function registeredVariables() {
   const given = process.argv.includes('--source')
     ? process.argv[process.argv.indexOf('--source') + 1]
     : process.env.DSH_SOURCE;
-  const candidates = given
-    ? [join(given, 'packages', 'core', 'agent-loop', 'src', 'index.ts'), join(given, 'src', 'index.ts')]
-    : [];
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    const found = new Set();
-    for (const match of readFileSync(candidate, 'utf8').matchAll(/systemPrompt\.variable\(\s*['"](\w+)['"]/g)) {
-      found.add(match[1]);
-    }
-    return { found, source: candidate };
+  const read = readSourceText(
+    given,
+    ['packages/core/agent-loop/src/index.ts', 'src/index.ts'],
+    sourceRef(),
+  );
+  if (read === undefined) return { found: new Set(), origin: null };
+  if (read.error !== undefined) return { found: new Set(), origin: null, error: read.error };
+  const found = new Set();
+  for (const match of read.text.matchAll(/systemPrompt\.variable\(\s*['"](\w+)['"]/g)) {
+    found.add(match[1]);
   }
-  return { found: new Set(), source: null };
+  return { found, origin: read.origin };
 }
 
-const { found, source } = registeredVariables();
+const { found, origin, error } = registeredVariables();
+if (error !== undefined) {
+  console.log(`prompt variables: FAIL — ${error}`);
+  process.exit(1);
+}
 // Fail closed: the loop's own registrations are a stable contract, so a machine without the
 // source tree still enforces them. Anything beyond that needs the source to prove.
 const allowed = new Set(['provider', 'model']);
@@ -134,4 +144,4 @@ if (failures.length > 0) {
   console.error(`\nprompt variables: ${failures.length} 处无法解析`);
   process.exit(1);
 }
-console.log(`prompt variables: ok（${patches.length} 份 patch 的 persona/section 文本共 ${references} 处 {{...}} 引用，全部在已注册集合内${source ? `；真值来自 ${source.replace(/\\/g, '/')}` : '；未提供源码树，按文档化的最小集合 provider/model 检查'}）`);
+console.log(`prompt variables: ok（${patches.length} 份 patch 的 persona/section 文本共 ${references} 处 {{...}} 引用，全部在已注册集合内${origin ? `；真值来自 ${origin.replace(/\\/g, '/')}` : '；未提供源码树，按文档化的最小集合 provider/model 检查'}）`);

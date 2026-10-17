@@ -1,6 +1,7 @@
 {
   "publicRepo": "<this machine: path to the release repository>",
   "dshSource": "<optional: path to a DSH source checkout, for the truth-exporting checks>",
+  "dshSourceTag": "<optional but recommended with dshSource: the tag/commit the installed harness came from, e.g. a release tag — checks then read `git show <tag>:<path>` instead of a working tree that is usually mid-edit>",
   "message": "sync: snapshot from dev",
   "excludeDirs": [".git", "private"],
   "excludeFiles": [".gitignore", "publish.config.json"]

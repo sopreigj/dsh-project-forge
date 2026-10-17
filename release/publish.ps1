@@ -57,6 +57,9 @@ if (Test-Path $configPath) {
 
 if (-not $PublicRepo) { $PublicRepo = if ($config) { $config.publicRepo } else { $env:FORGE_PUBLIC_REPO } }
 if (-not $DshSource) { $DshSource = if ($config) { $config.dshSource } else { $env:DSH_SOURCE } }
+# 真值取自哪个提交：源码树通常是「脏」的（正在改的下一版），而装上去跑的是某个发布。给了 tag 就
+# 一律读 `git show <tag>:<path>`，绝不退回工作区——见 release/source-truth.mjs。
+$DshSourceTag = if ($DshSourceTag) { $DshSourceTag } elseif ($config -and $config.dshSourceTag) { $config.dshSourceTag } else { $env:DSH_SOURCE_TAG }
 if (-not $Message) { $Message = if ($config -and $config.message) { $config.message } else { 'sync: snapshot from dev' } }
 if (-not $PublicRepo) {
   throw "没有发布目录：用 -PublicRepo、release/publish.config.json 或环境变量 FORGE_PUBLIC_REPO 指定（见 publish.config.example.json）"
@@ -77,6 +80,7 @@ function Invoke-Check([string]$Label, [string]$Script, [string[]]$Arguments) {
 Invoke-Check '自测（配置 / digest / 守卫 / patch↔schema）' "$dev\test\run.mjs" @("$dev\plugin\index.js")
 Invoke-Check '一致性（配置参考表 ↔ schema；技能副本）' "$dev\release\check-consistency.mjs" @()
 $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
+if ($DshSourceTag) { $presetArgs += @('--tag', $DshSourceTag) }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
 Invoke-Check '提示词变量（patch 里的 {{...}} 必须已注册）' "$dev\release\check-prompt-variables.mjs" $presetArgs

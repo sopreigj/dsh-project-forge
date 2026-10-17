@@ -22,6 +22,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readSourceText, sourceRef } from './source-truth.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Rows the shipped `standard` preset has and this bundle deliberately does not. */
@@ -84,22 +86,29 @@ function parseRows(text) {
   return rows;
 }
 
+// The upstream preset is read through `--tag` when one is given (see `source-truth.mjs`): a
+// developer checkout is usually dirty, and "what the shipped `standard` preset contains" is a
+// property of a release, not of the working copy someone happens to have open.
 function findShippedPreset() {
   const given = process.argv.includes('--source')
     ? process.argv[process.argv.indexOf('--source') + 1]
     : process.env.DSH_SOURCE;
   if (given === undefined || given === '') return null;
-  const candidates = [
-    join(given, 'standard.patch.yml'),
-    join(given, 'packages', 'bundle', 'web-app', 'presets', 'standard.patch.yml'),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  return readSourceText(
+    given,
+    ['standard.patch.yml', 'packages/bundle/web-app/presets/standard.patch.yml'],
+    sourceRef(),
+  );
 }
 
-const shippedPath = findShippedPreset();
-if (shippedPath === null) {
+const shippedRead = findShippedPreset();
+if (shippedRead === null) {
   console.log('preset sync: skipped（未提供 DSH 源码树；用 --source <dir> 或 $DSH_SOURCE 指定）');
   process.exit(0);
+}
+if (shippedRead.error !== undefined) {
+  console.log(`preset sync: FAIL — ${shippedRead.error}`);
+  process.exit(1);
 }
 
 /** Compare inside the preset: drop the outer preset row, whose id differs by design. */
@@ -113,7 +122,7 @@ function insidePreset(rows) {
   return inner;
 }
 
-const shipped = insidePreset(parseRows(readFileSync(shippedPath, 'utf8')));
+const shipped = insidePreset(parseRows(shippedRead.text));
 const ours = insidePreset(parseRows(readFileSync(join(root, 'cordis.patch.yml'), 'utf8')));
 
 const failures = [];
@@ -152,7 +161,7 @@ for (const path of ours.keys()) {
 for (const note of notes) console.log(`· ${note}`);
 if (failures.length > 0) {
   for (const failure of failures) console.error(`✗ ${failure}`);
-  console.error(`\npreset sync: ${failures.length} 处需要处理（shipped: ${shippedPath}）`);
+  console.error(`\npreset sync: ${failures.length} 处需要处理（shipped: ${shippedRead.origin}）`);
   process.exit(1);
 }
 console.log(`preset sync: ok（本仓 ${ours.size} 行 / shipped ${shipped.size} 行，差异全部已记录）`);

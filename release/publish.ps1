@@ -8,6 +8,7 @@
 #        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard（无源码树时自跳过）
 #        · check-public-surface.mjs  公开面：用本模式自己的隐私守卫检查它自己的仓库
 #        · check-runtime.mjs         运行时：内置技能的 frontmatter、customSkillDirs 计算出的目标
+#                                    （--repo 可指向第二个 bundle，所以 review/ 也跑同一组检查）
 #          （它还能解码会话日志、核对生效预设与"装的是哪一份"，那些要另传 --session/--copy）
 #   2. 再镜像：`private/`（状态边界：四份合同 + 记录）与 `.gitignore` 之外的全部内容
 #      复制到发布目录；发布目录自带一份忽略状态边界的 .gitignore。
@@ -47,6 +48,7 @@ $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
 Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
+Invoke-Check '运行时·review bundle（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @('--repo', "$dev\review")
 
 # 2) 镜像同步：排除 .git、整个状态边界 private/、.gitignore
 #    （发布版的 .gitignore 由发布目录自己维护，内容是"忽略状态边界"）。

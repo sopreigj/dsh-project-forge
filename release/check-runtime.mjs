@@ -18,13 +18,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zstdDecompressSync } from 'node:zlib';
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const value = (name) => {
   const at = args.indexOf(`--${name}`);
   return at === -1 ? undefined : args[at + 1];
 };
 const has = (name) => args.includes(`--${name}`);
+
+/** The repo whose cordis.patch.yml and skills are checked. Defaults to this file's own repo;
+ * `--repo` lets the same checks run against a second bundle in the same tree (`review/`), whose
+ * patch and skills nothing else covers. */
+const repo = resolve(value('repo') ?? join(dirname(fileURLToPath(import.meta.url)), '..'));
 
 const failures = [];
 const skipped = [];

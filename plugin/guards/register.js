@@ -502,7 +502,13 @@ export function registerGuards(ctx, config, states) {
           // plugin instance manages (other presets' compositions are out of scope).
           const sessionId = options?.sessionId;
           if (typeof sessionId !== 'string' || !states.has(sessionId)) return next();
-          return repairMalformedToolCallIds(next(), (message) => ctx.logger?.warn?.(message));
+          return repairMalformedToolCallIds(next(), (message) => {
+            // Count it for the digest as well: the log line is for whoever reads logs, the
+            // digest block is what the model actually sees before it retries.
+            const state = states.get(sessionId);
+            if (state !== undefined) state.malformedRepairs = (state.malformedRepairs ?? 0) + 1;
+            ctx.logger?.warn?.(message);
+          });
         }),
       'project-forge.malformedToolCallRepair()',
     );

@@ -82,6 +82,44 @@
     }
     assert.equal(foreign[0].block.id, '', 'a session this plugin does not own is left alone');
     console.log('malformed tool-call repair: OK');
+
+    // The repair must not live only in the log. `ctx.logger` is always present (a built-in,
+    // non-optional context service), so the warning is never lost — but a log line is not
+    // something the model reads, and the repaired call surfaces as an *unknown tool*, which
+    // looks like a missing tool rather than a broken function tag. The digest carries the
+    // cause into the next prompt; `digestRefreshMs: 0` defeats the cache so the assertion
+    // reads what the model would actually get next.
+    const { ctx: dCtx, record: dRecord } = makeCtx();
+    // `digestRefreshMs` must be positive (the schema says so), so the smallest honest value:
+    // the cache window still has to elapse between the repair and the read below.
+    plugin.apply(dCtx, standard.validate({ digestRefreshMs: 1, injectOnCompaction: false }).value);
+    const dListener = dRecord.listeners.find((entry) => entry.name === 'llm/stream');
+    const { agent: dAgent, contexts: dContexts } = createdAgent(dRecord, project, 'session-malformed-digest');
+    // The heading as the model sees it — asserted literally, not via the exported constant,
+    // because this is prompt text.
+    const REPAIR_HEADING = '## ⚠ 本会话修复过的畸形工具调用';
+    const open = () => dContexts[0].text({});
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+    const drain = async () => {
+      for await (const _chunk of dListener.handler(
+        { sessionId: dAgent.session.header.id },
+        () => malformedStream(),
+      )) { /* the repair happens while the stream is consumed */ }
+      await settle();
+    };
+
+    assert.ok(!open().includes(REPAIR_HEADING), 'a healthy session carries no repair block');
+    await drain();
+    const repairedText = open();
+    assert.ok(repairedText.includes(REPAIR_HEADING), 'the next digest reports the repair');
+    assert.ok(repairedText.includes('**1** 个'), 'the block carries the count');
+    assert.ok(
+      repairedText.includes('unknown tool'),
+      'and says what the model will actually see at the tool layer',
+    );
+    await drain();
+    assert.ok(open().includes('**2** 个'), 'the count accumulates per session');
+    console.log('malformed tool-call repair visible in the digest: OK');
   }
 
   // ── Guard G switch: repair can be disabled ───────────────────────────────────

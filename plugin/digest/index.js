@@ -36,6 +36,26 @@ export const IN_FLIGHT_HEADING = '## 在办认领（谁正在改什么）';
 /** Trailing note the digest carries about the one document it omits. */
 export const BUDGET_HEADING = '## ⚠ 超出预算（不截断，只提示）';
 
+/** Heading of the block that reports tool calls this session had to repair. */
+export const REPAIR_HEADING = '## ⚠ 本会话修复过的畸形工具调用';
+
+/**
+ * Report the malformed tool calls repaired so far, or `undefined` when there were none.
+ *
+ * The repair is logged (`ctx.logger.warn`) — the logger is a built-in, non-optional service of
+ * the runtime context — but a log line is not something the model reads. The failure it repairs
+ * (`<function=psh?`, an empty call id) surfaces at the tool layer as an *unknown tool*, so
+ * without this line the model sees only the symptom and retries the same broken tag. One line
+ * in the digest puts the cause where the model is actually looking; the block is absent until
+ * something was repaired, so a healthy session pays nothing for it.
+ *
+ * @param count - repaired calls in this session.
+ */
+export function renderRepairs(count) {
+  if (typeof count !== 'number' || count <= 0) return undefined;
+  return `- 本会话已修复 **${count}** 个畸形工具调用（模型写出了坏掉的 function 标签，空 call id 被换成合成 id，所以那个调用会以 unknown tool 失败）。重试前先检查是不是标签写坏了，不要重复同一个形状。`;
+}
+
 /**
  * Render the in-flight block: every live claim in this project plus the takeovers this session
  * just performed. Expired claims are left out — the guard deletes them when it next touches the

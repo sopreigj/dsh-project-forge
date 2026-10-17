@@ -69,7 +69,9 @@ import {
   REPO_HEADING,
   IN_FLIGHT_HEADING,
   BUDGET_HEADING,
+  REPAIR_HEADING,
   renderInFlight,
+  renderRepairs,
   renderTortuousIndex,
   renderJournalTail,
   renderReadOnDemand,
@@ -240,6 +242,12 @@ export function apply(ctx, config) {
     // instead of maintaining a shared "in progress" list that a killed session cannot clean.
     const inFlight = renderInFlight(cwd, config, state.agent?.id, state.takeovers);
     if (inFlight !== undefined) blocks.push('', IN_FLIGHT_HEADING, '', inFlight);
+    // A repaired malformed tool call is the one event the model cannot infer from its own
+    // transcript: the call fails as an unknown tool, which looks identical to a missing tool.
+    // The log line explains it to a human reading logs; this block puts the cause in front of
+    // the model, and it costs nothing until something was repaired.
+    const repairs = renderRepairs(state.malformedRepairs);
+    if (repairs !== undefined) blocks.push('', REPAIR_HEADING, '', repairs);
     // Static text, so it costs nothing once the prefix is cached, and it is what makes the
     // read-on-demand files discoverable at all.
     blocks.push('', renderReadOnDemand(cwd, config));
@@ -323,6 +331,8 @@ export function apply(ctx, config) {
       repoHead: undefined,
       /** Stale claims this session took over, shown in the digest until the next commit. */
       takeovers: [],
+      /** Malformed tool calls this session's stream repair rewrote, counted for the digest. */
+      malformedRepairs: 0,
     };
     states.set(agent.id, state);
 

@@ -494,8 +494,9 @@ export function apply(ctx, config) {
           if (command === undefined) return undefined;
           const escape = localGitEscape(command);
           if (escape === undefined) return undefined;
-          // A forced push rewrites published history: grants never cover it.
-          if (escape.label === 'git push' && /\bgit\s+push\b[^|&]*(\s-f\b|--force\b|--force-with-lease)/.test(stripQuoted(command))) {
+          // A forced push rewrites published history: grants never cover it. The flag comes from the
+          // parsed invocation, so a global option before the subcommand no longer hides it.
+          if (escape.forced === true) {
             return [
               '项目锻造模式拒绝这次 `git push`：强推会重写已发布的历史，',
               '任何一次性授权都不覆盖它。确需如此，由用户显式关闭 `guardLocalGit`。',

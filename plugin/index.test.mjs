@@ -599,6 +599,40 @@ const PROJECT_MARKERS = {
   ]) {
     assert.equal(localGitGuard(shell(command, guardAgent)), undefined, `allows ${command}`);
   }
+  // The bypass surfaces found by probing (T43): a git global option used to sit between `git` and
+  // its subcommand, or a shell wrapper hiding the real command inside quotes, or the plumbing push.
+  for (const command of [
+    'git -c credential.helper=store push origin main',
+    'git -c push.default=current push',
+    'git -C . push origin main',
+    'git --no-pager push origin main',
+    'git -c core.pager=cat push origin main',
+    'bash -c "git push origin main"',
+    'sh -c \'git push origin main\'',
+    'pwsh -NoProfile -Command "git push origin main"',
+    'git send-pack origin main',
+    'git -c credential.helper=store send-pack origin main',
+    'git config --global alias.p push',
+    'gh api -X POST /repos/o/r/git/refs',
+    'gh api --method=PATCH /repos/o/r',
+    'gh release create v1',
+  ]) {
+    assert.ok(
+      String(localGitGuard(shell(command, guardAgent))).includes('仅本地'),
+      `refuses the bypass shape ${command}`,
+    );
+  }
+  // Still allowed: read-only or unrelated uses, including the plumbing that does not publish.
+  for (const command of [
+    'git fetch --all --prune',
+    'git remote update',
+    'git --no-pager log --oneline',
+    'bash -c "git status --short"',
+    'gh api /repos/o/r',
+    'gh pr list',
+  ]) {
+    assert.equal(localGitGuard(shell(command, guardAgent)), undefined, `still allows ${command}`);
+  }
   console.log('local-git guard: OK');
 
   // ── Guard A: one-shot push grants — consume on use, never standing permission ──

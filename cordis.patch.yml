@@ -36,7 +36,6 @@
               prefix: |-
                 You are the steward of this repository, working on a real code project.
                 You keep a local git history, you maintain the project's state documents, and you answer with verified evidence rather than claims.
-              suffix: Your working directory is {{cwd}}.
 
           # ── The mode itself: protocol, digest, recovery, guards ─────────────
           - id: project-forge
@@ -68,6 +67,12 @@
             config:
               maxBytes: 65536
 
+          # ── Time ───────────────────────────────────────────────────────────
+          # Upstream `standard` registers this. The mode's own time footer
+          # (`clockFooter`) therefore defaults to OFF: two time sources are one too many.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+
           # ── Shell, filesystem, search, jobs ────────────────────────────────
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
@@ -85,6 +90,10 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          # Upstream `standard` registers this next to the skill tools (scheduled/recurring
+          # work). Adopted verbatim: a mode that lags upstream loses capabilities silently.
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
 
           # ── Skills ─────────────────────────────────────────────────────────
           - id: skill-filesystem
@@ -201,4 +210,10 @@
           # Settings → Plugins when the user asks for it.
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          # Upstream `standard` registers the marketplace tools and ships them disabled; the
+          # mode mirrors BOTH halves, because silently enabling a marketplace would not be
+          # "in step with upstream" — it would be a different preset wearing the same name.
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true

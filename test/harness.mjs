@@ -20,6 +20,11 @@ import { pathToFileURL } from 'node:url';
 export const pluginPath = resolve(process.argv[2] ?? '.');
 export const plugin = await import(pathToFileURL(pluginPath).href);
 
+// The shared slice, imported beside the plugin: the composition root does not re-export its
+// helpers, and a check that proves something about one of them (the remote-URL fallback) must be
+// able to call it rather than re-implement it.
+export const sharedSlice = await import(pathToFileURL(join(dirname(pluginPath), 'shared', 'index.js')).href);
+
 export const standard = plugin.Config['~standard'];
 
 // ── Stub Cordis context ─────────────────────────────────────────────────────────

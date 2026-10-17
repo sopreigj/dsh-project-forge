@@ -6,7 +6,46 @@
 它是**给人看的**，不是 git 日志的搬运：每条说明做了什么、为什么；同类改动归组；新版本在前。
 每个版本一行日期（`YYYY-MM-DD`）；不兼容的变动写进 `Changed` 或 `Removed` 并注明迁移方式。
 
+## [3.4.0] - 2026-10-17
+
+### Added
+
+- 采纳上游 `standard` 的三条：`time-context`、`tool-schedule` 启用，`tool-plugin-market` 跟随上游保持 `disabled: true`。
+  preset 是上游清单的副本，不同步就等于悄悄比上游少能力。
+
+### Changed
+
+- `clockFooter` 默认值 `true` → `false`：时间由宿主的 `time-context` 提供，一个时间来源就够。
+  需要旧行为的预设显式设为 `true`。
+
+### Fixed
+
+- digest 不再把文档里的 `{{` 改写成 `{ {`：宿主 0.2.1-rc 起 `systemPrompt.context` 也尊重 `interpolate: false`，
+  旧的改写手段只剩副作用（引用 Vue/mustache 的文档会被改坏）。
+
+### Notes
+
+- **宿主下限：DeepSeek Harness ≥ 0.2.1-rc**。digest 依赖 context 级的 `interpolate: false`（见 V11）。
 ## [Unreleased]
+
+### Fixed
+- digest 不再改写文档里的 `{{`：宿主 0.2.1 起 `systemPrompt.context` 也尊重 `interpolate: false`，旧宿主上必要的 `{ {` 拆分如今只剩副作用（引用 Vue/mustache 的文档会被改坏）。
+
+- **修掉一个让模式装上即失效的缺陷：persona 的 `suffix` 引用了不存在的提示词变量**。两份 patch
+  （主仓与 `review/`）的 persona 行都写着 `Your working directory is {{cwd}}.`，而 harness 只注册
+  `provider` 与 `model` 两个变量。`dsh-system-prompt` 的插值是严格的：认不出的 `{{name}}` 会在
+  组装 system prompt 时抛错，且发生在任何模型请求之前——所以选中该模式的每个回合都会失败，而不是
+  某个角落变难看。已删除该行：工作目录由 working-directory 服务作为运行时上下文提供，本就不该由
+  persona 声明（harness 自己的文档点名了这个反模式）。
+- **新增第八门检查 `release/check-prompt-variables.mjs`**：把两份 patch 的 persona/`section` 文本
+  里每一处 `{{...}}` 对着已注册变量集合核一遍，认不出即拒绝发布。真值从 agent-loop 源码导出
+  （`--source`/`$DSH_SOURCE`）；没有源码树时按文档化的最小集合 `provider`/`model` 失败关闭，
+  而不是放行一切——"没查"不能长得像"没问题"。已接进 `publish.ps1`。
+  变异验证：注入 `{{cwd}}` → 检查以 `{{cwd}}` 与行号报错；换成 `{{model}}`/`{{provider}}` → 放行。
+
+### Fixed
+
+- 推送授权不再依赖子进程解析远端：「这次推哪个远端」先问 `git`，问不到时回退读 `.git/config`（含 worktree 的 `gitdir:` 形态）。此前在无法启动子进程的宿主里任何授权都不可能匹配，而拒绝消息仍叫你去写一条新的授权行——现在会直接点名「目标远端解析不到」。
 
 ## [3.3.0] - 2026-10-17
 

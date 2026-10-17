@@ -47,7 +47,7 @@ code that implements it.
 | `guardMalformedToolCall` | `true` | Rewrite an empty tool-call id from the model stream into a synthetic one (an empty id freezes the session file mid-turn). The repair is logged, and the digest then reports it — the repaired call reaches the model as an unknown tool, so without that line the cause would look like a missing tool. |
 | `sizeLimitMode` | `"warn"` | `"warn"` only prints the digest warning line. `"ratchet"` additionally refuses a commit that makes an **already-over-cap** document bigger; shrinking and splitting always pass. The refusal reports that document's budget, the hard cap, the current size and how far over the cap it is. |
 | `sizeHardRatio` | `1.5` | Hard cap = the document's budget × this factor, used by `"ratchet"`. |
-| `clockFooter` | `true` | Append one line carrying the current time to a successful tool result. |
+| `clockFooter` | `false` | Append one line carrying the current time to a successful tool result. Off by default: the preset adopts upstream's `time-context`, and two time sources are one too many. Turn it on for a preset that has no `time-context`. |
 | `clockFooterThrottleMs` | `600000` | Minimum interval between two such lines, per session. |
 | `concurrentWriteMode` | `"both"` | Which shared files the claim guard protects. With `"both"` or `"sourceFiles"` it covers the four state documents, source files, and **any other file this project tracks**; with any other value, the state documents only. Untracked files (build artifacts, drafts) are never claimed. |
 | `claimStaleMs` | `600000` | How long a claim survives without its owner touching it. Expiry is the only cleanup this design relies on. |

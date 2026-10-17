@@ -43,6 +43,7 @@ import {
   gitDirtyPath,
   gitTracksPath,
   isInsideStateDir,
+  pushTargetUrl,
   readClaim,
   readIfPresent,
   resolveStateFile,
@@ -86,9 +87,16 @@ export function registerGuards(ctx, config, states) {
             const cwd = execution.agent?.session?.header?.cwd;
             const granted = typeof cwd === 'string' && checkPushGrant(cwd, config, command) === true;
             if (granted) return undefined; // grant consumed — this push, and only this push, proceeds
+            // A grant can only be matched against a target. When the target cannot be resolved at
+            // all, saying "no grant" sends the agent to write another grant line that can never
+            // work — so name the real cause instead (a refusal the agent can act on).
+            const targetKnown = typeof cwd === 'string' && pushTargetUrl(cwd, command) !== undefined;
             return [
               '项目锻造模式拒绝 `git push`：本仓库仅本地，没有任何一次性授权覆盖这次推送。',
-              '要授权恰好一次推送，请在仓库自带规则里加一行（只有用户明确要求发布时才这么做）：',
+              targetKnown
+                ? '要授权恰好一次推送，请在仓库自带规则里加一行（只有用户明确要求发布时才这么做）：'
+                : '另外：解析不到这次推送的目标远端（没有名为该远端的配置，且插件也无法执行 `git` 去问），'
+                  + '所以在修好远端之前任何授权都不可能匹配。先补一个远端，或把远端 URL 直接写进命令。',
               `规则文件：\`${stewardDisplayPath(config)}\`，`,
               '写法如下：',
               '`push allowed: <remote-url-or-glob> [×N]` —— 每次受守卫的推送消耗一次授权，',

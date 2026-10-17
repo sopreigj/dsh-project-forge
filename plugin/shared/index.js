@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -379,7 +379,45 @@ export function pushTargetUrl(cwd, command) {
   if (target === '') target = 'origin';
   if (/^(https?:\/\/|git@|ssh:\/\/)/.test(target)) return target;
   const url = runGitOrNothing(cwd, ['remote', 'get-url', target]);
-  return url === undefined ? undefined : url.trim();
+  if (url !== undefined) return url.trim();
+  // Falling back to the config file is not belt-and-braces: resolving through `git` means spawning
+  // a process, and a host that cannot spawn turns every grant into a silent mismatch (the guard
+  // then refuses a push the user authorized). `.git/config` holds the same answer as a plain read.
+  return remoteUrlFromConfig(cwd, target);
+}
+
+/**
+ * The URL of one configured remote, read straight out of `.git/config` — no subprocess, so it
+ * still works where spawning git does not. Handles both repository shapes: `.git` as a directory
+ * (`config` inside it) and `.git` as a file pointing at a worktree/temporary git directory.
+ * @param cwd - the repository root.
+ * @param name - the remote name, e.g. 'origin'.
+ * @returns the URL, or `undefined` when the remote is not configured.
+ */
+export function remoteUrlFromConfig(cwd, name) {
+  const dotGit = join(cwd, '.git');
+  let configPath = join(dotGit, 'config');
+  if (!existsSync(configPath)) {
+    const pointer = readIfPresent(dotGit);
+    const match = pointer === undefined ? null : /^gitdir:\s*(.+)$/m.exec(pointer);
+    if (match === null) return undefined;
+    configPath = join(cwd, match[1].trim(), 'config');
+  }
+  const text = readIfPresent(configPath);
+  if (text === undefined) return undefined;
+  const lines = text.split(/\r?\n/);
+  let inRemote = false;
+  for (const line of lines) {
+    const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (section !== null) {
+      inRemote = /^remote\s+"([^"]+)"$/.test(section[1]) && section[1].includes(`"${name}"`);
+      continue;
+    }
+    if (!inRemote) continue;
+    const url = /^\s*url\s*=\s*(.+?)\s*$/.exec(line);
+    if (url !== null) return url[1];
+  }
+  return undefined;
 }
 
 /**

@@ -3,14 +3,14 @@
  * imports every slice check in the order they were originally written — they share this one process
  * and one fixture repository, and a failure names the file that failed.
  */
-import { PROJECT_MARKERS, agentListeners, createdAgent, initRepo, makeCtx, plugin, pluginPath, project, shell, standard } from './harness.mjs';
+import { PROJECT_MARKERS, agentListeners, createdAgent, initRepo, makeCtx, plugin, pluginPath, project, sharedSlice, shell, standard } from './harness.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-Object.assign(globalThis, { PROJECT_MARKERS, agentListeners, createdAgent, initRepo, makeCtx, plugin, pluginPath, project, shell, standard, assert, execFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, tmpdir, dirname, join, resolve });
+Object.assign(globalThis, { PROJECT_MARKERS, agentListeners, createdAgent, initRepo, makeCtx, plugin, pluginPath, project, sharedSlice, shell, standard, assert, execFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, tmpdir, dirname, join, resolve });
 
 const checks = [
   'config.test.mjs',

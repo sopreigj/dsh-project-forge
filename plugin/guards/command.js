@@ -122,11 +122,30 @@ export function localGitEscape(command) {
 }
 
 /**
+ * The subcommands one shell command actually runs, with every git global option skipped.
+ *
+ * This is the single parser every commit- and push-gated guard reads: a guard that matched the raw
+ * text instead would treat `git -C . commit` or `git -c user.name=x commit` as "not a commit" and
+ * skip silently — the shape a legal command takes, not an exotic one.
+ * @param command - the command line handed to a shell tool.
+ * @returns the subcommands in order (may be empty).
+ */
+export function gitSubcommands(command) {
+  if (typeof command !== 'string' || command.length === 0) return [];
+  const bare = stripQuoted(command);
+  const candidates = SHELL_WRAPPER.test(command) ? [bare, command] : [bare];
+  const verbs = [];
+  for (const text of candidates) {
+    for (const { verb } of gitInvocations(text)) verbs.push(verb);
+  }
+  return verbs;
+}
+
+/**
  * Decide whether one shell command is a commit that the checkpoint protocol governs.
  * @param command - the command line handed to a shell tool.
  * @returns true when the command commits.
  */
 export function isCommitCommand(command) {
-  if (typeof command !== 'string' || command.length === 0) return false;
-  return /\bgit\s+commit\b/.test(stripQuoted(command));
+  return gitSubcommands(command).includes('commit');
 }

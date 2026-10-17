@@ -48,6 +48,7 @@ Invoke-Check '一致性（配置参考表 ↔ schema；技能副本）' "$dev\re
 $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
+Invoke-Check '提示词变量（patch 里的 {{...}} 必须已注册）' "$dev\release\check-prompt-variables.mjs" $presetArgs
 Invoke-Check '更新日志（package.json 的版本必须有条目）' "$dev\release\check-changelog.mjs" @()
 Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
 Invoke-Check '运行时·review bundle（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @('--repo', "$dev\review")

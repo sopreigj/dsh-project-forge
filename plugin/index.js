@@ -282,15 +282,14 @@ export function apply(ctx, config) {
         `- 处置：把最旧或最细的内容移进 \`${config.journalFile}\` 或 \`private/rationale/\`，正文只留现在还生效的东西。`);
     }
     state.journalTail = renderJournalTail(cwd, config);
-    // `systemPrompt.context()` entries are ALWAYS run through dsh-system-prompt's
-    // strict `{{variable}}` interpolator — the `interpolate: false` option is only
-    // honored on sections, and a document quoting Vue/mustache braces (e.g. a
-    // forensics report quoting `{{playCount|formatPlayCount}}`) otherwise throws
-    // `malformed prompt variable reference` during prompt assembly and kills every
-    // turn while the text stays in the digest (dc6b5fa7 10-03, 4ddb3937 10-13).
-    // Breaking every `{{` into `{ {` makes the whole text uninterpolatable; the
-    // model reads the file when it needs the exact spelling (the note above says so).
-    state.text = blocks.join('\n').replaceAll('{{', '{ {');
+    // Document prose is data, not a template. `systemPrompt.context()` carries the same
+    // `interpolate` switch as sections, and a host that honours it for context entries
+    // (`renderPrompt`: `context.interpolate === false ? context.text : interpolate(...)`) renders
+    // the digest exactly as written — which is why the context() call below declares it. Mangling
+    // `{{` into `{ {` was the workaround for a host that honoured the switch on sections only; it
+    // corrupted every document that quotes Vue/mustache braces, so it is gone (V11 records the host
+    // floor that replaces it).
+    state.text = blocks.join('\n');
     state.at = Date.now();
     state.status = 'ready';
   };

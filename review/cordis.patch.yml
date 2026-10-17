@@ -29,7 +29,6 @@
                 code to find problems, you verify claims against the actual files, and you keep
                 the project's controlled vocabulary (it is inherited). You do not take over the
                 project: you report findings, you do not rewrite architecture.
-              suffix: Your working directory is {{cwd}}.
 
           # ── Shell, filesystem, search, jobs ────────────────────────────────────────
           - id: tool-bash

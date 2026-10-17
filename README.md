@@ -24,6 +24,8 @@ dsh plugin --profile web add github:sopreigj/dsh-project-forge#main
 
 Bundle plugins take effect after restarting `dsh web`. Then pick 项目锻造模式 / 项目锻造 · 干净审查 in the mode picker.
 
+> **Requires DeepSeek Harness >= 0.2.1-rc.** The digest leaves `{{...}}` alone and hands interpolation off to `systemPrompt.context`'s `interpolate: false`; older hosts honour that switch on sections only, so on an older host a document quoting braces fails during prompt assembly (see `CHANGELOG.md` 3.4.0 and `V11` in the negative-knowledge record).
+
 ## What the mode enforces
 
 - **A state boundary.** Everything the project keeps for itself — the state documents, the

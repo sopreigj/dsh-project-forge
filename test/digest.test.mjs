@@ -68,12 +68,11 @@
   rmSync(bounded, { recursive: true, force: true });
   console.log('state boundary: OK');
 
-  // ── Digest braces: a document quoting {{…}} must not poison prompt assembly ───
-  // dsh-system-prompt always interpolates context entries (the interpolate option
-  // exists only for sections), and a strict {{name}} scan throws on Vue/mustache
-  // syntax like {{playCount|formatPlayCount}} — which killed real sessions
-  // (dc6b5fa7 10-03, 4ddb3937 10-13: every turn failed with
-  // "malformed prompt variable reference" until the digest text changed).
+  // ── Digest braces: document prose reaches the model VERBATIM ────────────────
+  // The digest is registered with `interpolate: false` (asserted below), and a host that honours
+  // that switch for context entries renders the text exactly as written. Breaking `{{` into `{ {`
+  // was the workaround for a host that honoured it on sections only; it is gone because it
+  // corrupted every document quoting braces (V11 records the host floor that replaces it).
   writeFileSync(
     join(project, 'done.md'),
     `# done\n${PROJECT_MARKERS.done}\nquote: {{playCount|formatPlayCount}} and {{ok}}\n`,
@@ -81,14 +80,12 @@
   const { contexts: braceContexts } = createdAgent(record, project, 'session-braces');
   const braceDigest = braceContexts[0];
   const braceText = braceDigest.text({});
-  assert.ok(!braceText.includes('{{'), 'no raw {{ survives into the digest');
-  assert.ok(braceText.includes('{ {playCount|formatPlayCount}}'), 'the quoted template stays readable');
-  // The strict scan that killed those sessions, replayed over the digest:
-  assert.doesNotThrow(() => /\{\{[^}]*\}\}/.test(braceText) && (() => {
-    for (const m of braceText.matchAll(/\{\{(.*?)\}\}/g)) {
-      if (!/^[a-z][a-z0-9_]*$/.test(m[1])) throw new Error(`malformed prompt variable reference "{{${m[1]}}}"`);
-    }
-  })(), 'a dsh-style strict scan of the digest does not throw');
+  assert.equal(braceDigest.interpolate, false, 'the digest is registered as non-interpolated');
+  assert.ok(
+    braceText.includes('{{playCount|formatPlayCount}}'),
+    'brace text survives verbatim — the document is not mangled',
+  );
+  assert.ok(!braceText.includes('{ {playCount'), 'the old mangling is gone');
   console.log('digest braces: OK');
 
   // ── An empty project says why, instead of saying nothing ──────────────────────

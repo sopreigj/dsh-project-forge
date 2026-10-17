@@ -13,9 +13,17 @@
 // own business and is covered by the tool packages' tests.
   const { ctx: clockCtx, record: clockRecord } = makeCtx();
   plugin.apply(clockCtx, standard.validate({ digest: false, injectOnCompaction: false }).value);
-  const hook = clockRecord.listeners.find((listener) => listener.name === 'tools/post-execute');
-  assert.ok(hook !== undefined, 'the clock hook is registered on tools/post-execute');
-  const { agent: clockAgent } = createdAgent(clockRecord, project, 'session-clock');
+  // Default OFF since the mode adopts upstream `time-context` (D38): one time source is enough.
+  assert.equal(
+    clockRecord.listeners.find((listener) => listener.name === 'tools/post-execute'),
+    undefined,
+    'no clock hook unless the config asks for one',
+  );
+  const { ctx: clockOnCtx, record: clockOnRecord } = makeCtx();
+  plugin.apply(clockOnCtx, standard.validate({ digest: false, injectOnCompaction: false, clockFooter: true }).value);
+  const hook = clockOnRecord.listeners.find((listener) => listener.name === 'tools/post-execute');
+  assert.ok(hook !== undefined, 'the clock hook is registered on tools/post-execute when clockFooter is on');
+  const { agent: clockAgent } = createdAgent(clockOnRecord, project, 'session-clock');
   const call = (result) => hook.handler(
     { name: 'read', arguments: {}, agent: clockAgent },
     result,

@@ -134,6 +134,31 @@ import { guardAgent, guardRecord } from './checkpoint-and-recovery.test.mjs';
       'a command outside command/cmd stays out of reach (documented boundary)',
     );
 
+    // A repository with no remote at all: no grant can ever match, so the refusal must name the
+    // real cause (an unresolvable target) instead of asking for another grant line.
+    const noRemote = mkdtempSync(join(tmpdir(), 'forge-noremote-'));
+    writeFileSync(join(noRemote, 'app.py'), 'print(1)\n');
+    mkdirSync(join(noRemote, '.agents'), { recursive: true });
+    initRepo(noRemote);
+    writeFileSync(join(noRemote, '.agents', 'steward.md'), 'push allowed: *\n');
+    const { agent: nrAgent } = createdAgent(gRecord, noRemote, `session-noremote-${Date.now().toString(36)}`);
+    const nrGuard = gRecord.guards.find(
+      (guard) => typeof guard(shell('git push origin main', nrAgent)) === 'string',
+    );
+    const nrMessage = String(nrGuard(shell('git push origin main', nrAgent)));
+    assert.ok(nrMessage.includes('解析不到这次推送的目标远端'), 'unresolvable target is named as the cause, not "write another grant"');
+    assert.ok(
+      sharedSlice.remoteUrlFromConfig(noRemote, 'origin') === undefined,
+      'the config fallback reports a missing remote rather than inventing one',
+    );
+    // …and the fallback reads the same answer git would, without spawning anything.
+    assert.equal(
+      sharedSlice.remoteUrlFromConfig(repo, 'origin'),
+      'https://github.com/sopreigj/nhentai-downloader.git',
+      'the config fallback resolves a configured remote on its own',
+    );
+
+    rmSync(noRemote, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
     console.log('one-shot push grants: OK');
   }

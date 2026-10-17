@@ -109,8 +109,11 @@ export const DEFAULTS = Object.freeze({
    * The clock rides on tool results (D30): after a successful tool call — at most once per
    * `clockFooterThrottleMs` — one line carrying the current time is appended to the result, so the
    * system prompt stays static and the digest stays cache-friendly. Failures are left untouched.
+   * Default OFF since the mode adopts upstream's `time-context` (D38): two time sources are one
+   * too many, and the host's is context-level rather than tied to having just run a tool. Turn it
+   * back on for a preset that has no `time-context` entry.
    */
-  clockFooter: true,
+  clockFooter: false,
   /** Minimum interval between two clock footnotes, in milliseconds, per session. */
   clockFooterThrottleMs: 600000,
   /** Which shared files the concurrent-write guard protects. */

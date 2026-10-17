@@ -242,14 +242,22 @@ function commonPrefixLength(a, b) {
             } catch {
               continue; // Nothing committed yet: there is no previous size to compare against.
             }
-            if (after.length > before) offenders.push(`${label} ${before} → ${after.length}（硬上限 ${hardCap}）`);
+            if (after.length > before) {
+              // "It grew past the cap" is the diagnosis; "by how much must it shrink" is what the
+              // next action needs, and only the guard can compute it. The per-document budget is
+              // what matters here — the whole budget table is noise in the message.
+              offenders.push(
+                `${label} ${before} → ${after.length}`
+                + `（预算 ${budget}、硬上限 ${hardCap}、还超 ${after.length - hardCap}）`,
+              );
+            }
           }
           if (offenders.length === 0) return undefined;
           return [
             '项目锻造模式拒绝 `git commit`：有合同文档已越过硬上限，而这次提交让它更大 —— ',
             `${offenders.join('；')}。`,
-            `预算是 ${JSON.stringify(config.documentBudgets)} 字符；硬上限是`
-              + `预算的 ${config.sizeHardRatio} 倍。瘦身、拆分、把内容搬走永远都能通过。`,
+            '要让它通过有两条路：这次提交**不要比上次大**（瘦身、拆分、搬走永远都能过），',
+            '或者直接把它减到硬上限以内。',
             '把最旧或最细的内容搬进记录文件或 `rationale/`，正文只留',
             '现在还生效的东西，然后再提交。',
           ].join(' ');

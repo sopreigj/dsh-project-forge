@@ -99,6 +99,21 @@
   assert.equal(typeof refusal, 'string', 'a commit that grows an already-over-cap document is refused');
   assert.ok(refusal.includes('done.md'), 'the refusal names the document');
   assert.ok(refusal.includes('3000'), 'the refusal states the hard cap it measured against');
+  // Derive the two sizes from the fixture itself: `body(n)` also carries a title line and a
+  // newline, so the document is longer than `n`.
+  const overCap = body(3200);
+  const excess = overCap.length - 3000;
+  assert.ok(refusal.includes(String(overCap.length)), 'and the size this commit would land');
+  assert.ok(refusal.includes('预算 2000'), 'the budget reported is this document\'s, not the whole table');
+  assert.ok(refusal.includes(`还超 ${excess}`), `the refusal states how far over the cap it is: ${refusal}`);
+  assert.ok(
+    refusal.includes('不要比上次大') && refusal.includes('减到硬上限以内'),
+    'and the two ways to make the next commit pass',
+  );
+  assert.ok(
+    !refusal.includes('plan.md'),
+    'the refusal no longer dumps the whole budget table',
+  );
   git('add', '-A');
   git('commit', '-q', '-m', 'fixture over the hard cap');
   writeFileSync(docPath, body(3100));

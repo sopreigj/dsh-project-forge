@@ -80,6 +80,11 @@ try {
   }
   Write-Output "待推送提交: $unpushed"
   git push
+  if ($LASTEXITCODE -ne 0) {
+    throw "git push 失败（exit=$LASTEXITCODE）：远端没收到，别把这次当成已发布。常见急救：重试；仍失败则 git config http.version HTTP/1.1 与 http.postBuffer 加大后重试。"
+  }
+  $behind = [int](git rev-list --count 'HEAD..origin/main')
+  if ($behind -ne 0) { throw "推送后 HEAD 仍与 origin/main 不一致（origin 比本地多 $behind 个提交）" }
   Write-Output "已发布: $(git log --oneline -1)"
 } finally {
   Pop-Location

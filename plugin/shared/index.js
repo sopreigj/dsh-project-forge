@@ -75,6 +75,39 @@ export function runGitOrNothing(cwd, args) {
 }
 
 /**
+ * The contract documents of a project, as repo-relative display paths: the inlined state
+ * documents plus the repository rule file.
+ *
+ * The protocol calls the **four** of them contracts, and two rules depend on that set meaning the
+ * same thing everywhere: the drift signal ("does any commit newer than the documents exist?") and
+ * the checkpoint guard ("was a contract document written since the compaction?"). The rule file is
+ * part of the four, so a session that only rewrites its rules has in fact documented itself — the
+ * refusal used to name the rule file as the way out while ignoring writes to it.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns repo-relative paths, forward slashes.
+ */
+export function contractDocuments(cwd, config) {
+  const documents = config.digestFiles.map(
+    (name) => displayPath(cwd, resolveStateFile(cwd, config, name).absolute),
+  );
+  const rules = stewardCandidates(cwd, config).find((candidate) => readIfPresent(candidate) !== undefined);
+  if (rules !== undefined) documents.push(displayPath(cwd, rules));
+  return documents;
+}
+
+/**
+ * The current HEAD commit, or `undefined` when git cannot answer. Used to tie a one-shot exemption
+ * to the tree state it was granted for.
+ * @param cwd - the repository root.
+ * @returns the full commit hash, or `undefined`.
+ */
+export function currentHead(cwd) {
+  const head = runGitOrNothing(cwd, ['rev-parse', 'HEAD']);
+  return head === undefined ? undefined : head.trim() || undefined;
+}
+
+/**
  * How many commits sit on top of the newest commit that touched a contract document. §9 asks
  * "do the documents describe the repository?", and the honest answer is git's: everything after
  * the last commit that changed a document is work no document write has accompanied yet.
@@ -89,9 +122,7 @@ export function runGitOrNothing(cwd, args) {
 export function commitsSinceDocumentWrite(cwd, config) {
   const head = runGitOrNothing(cwd, ['rev-parse', 'HEAD']);
   if (head === undefined) return undefined;
-  const documents = config.digestFiles.map(
-    (name) => displayPath(cwd, resolveStateFile(cwd, config, name).absolute),
-  );
+  const documents = contractDocuments(cwd, config);
   const last = (runGitOrNothing(cwd, ['log', '-1', '--format=%H', '--', ...documents]) ?? '').trim();
   if (last === '') return undefined; // no commit has touched the documents yet
   if (last === head.trim()) return 0;

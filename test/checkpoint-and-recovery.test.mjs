@@ -62,6 +62,67 @@
   touch(join(project, 'done.md'));
   assert.equal(commitGuard(commit(guardAgent)), undefined, 'the checkpoint guard clears after a document update');
 
+  // Two sequences the checkpoint rule has to answer correctly, both about *which* document
+  // writes count and *for how long*:
+  //   A) a write early in a session is not a standing permit — once HEAD moves past it, the
+  //      documents are behind again and the next commit is refused;
+  //   B) the rule file is one of the four contracts, so updating it alone clears a lagging
+  //      repository (the refusal used to name it as expected while ignoring writes to it).
+  {
+    const fixture = (prefix) => {
+      const dir = mkdtempSync(join(tmpdir(), prefix));
+      for (const name of ['plan.md', 'todo.md', 'done.md', 'steward.md']) {
+        writeFileSync(join(dir, name), `# ${name}\n`);
+      }
+      writeFileSync(join(dir, 'tortuous.jsonl'), '');
+      initRepo(dir);
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'chore: initial commit'], { cwd: dir, stdio: 'pipe' });
+      return dir;
+    };
+    const drive = (dir, sessionId) => {
+      const { ctx, record } = makeCtx();
+      plugin.apply(ctx, standard.validate({ stateDir: '.' }).value);
+      const { agent } = createdAgent(record, dir, sessionId);
+      const refusal = () => record.guards
+        .map((guard) => guard(commit(agent)))
+        .find((verdict) => typeof verdict === 'string' && verdict.includes('不是一个一致状态的检查点'));
+      // Every observer of a successful write sees it; the checkpoint one is among them.
+      const wrote = (filePath) => record.listeners
+        .filter((entry) => entry.name === 'tools/result')
+        .forEach((entry) => entry.handler({ name: 'edit', arguments: { file_path: filePath }, agent }, { isError: false }));
+      return { refusal, wrote };
+    };
+    const codeCommit = (dir, name) => {
+      writeFileSync(join(dir, name), 'hello\n');
+      execFileSync('git', ['add', name], { cwd: dir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'feat: code only'], { cwd: dir, stdio: 'pipe' });
+    };
+
+    const exemption = fixture('steward-exemption-');
+    const ex = drive(exemption, 'session-exemption');
+    assert.equal(ex.refusal(), undefined, 'in-sync documents may commit');
+    ex.wrote(join(exemption, 'done.md'));
+    assert.equal(ex.refusal(), undefined, 'a document write clears the very next commit');
+    codeCommit(exemption, 'src.txt');
+    assert.equal(
+      typeof ex.refusal(),
+      'string',
+      'the write exemption ends when HEAD moves past the write — it is not a standing permit',
+    );
+
+    const rules = fixture('steward-rules-');
+    const ru = drive(rules, 'session-rules');
+    codeCommit(rules, 'other.txt');
+    assert.equal(typeof ru.refusal(), 'string', 'a code-only commit alone leaves the documents behind');
+    ru.wrote(join(rules, 'steward.md'));
+    assert.equal(
+      ru.refusal(),
+      undefined,
+      'the repository rule file is one of the contracts, so writing it counts',
+    );
+  }
+
   // Unrelated tools and non-commit commands are untouched.
   assert.equal(commitGuard({ name: 'read', arguments: {}, agent: guardAgent }), undefined, 'other tools untouched');
   assert.equal(commitGuard(shell('git status --short', guardAgent)), undefined, 'non-commit commands untouched');

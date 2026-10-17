@@ -39,6 +39,9 @@ import {
   claimFiles,
   claimFresh,
   claimPath,
+  commitsSinceDocumentWrite,
+  contractDocuments,
+  currentHead,
   displayPath,
   gitDirtyPath,
   gitTracksPath,
@@ -312,10 +315,20 @@ function predictedContent(execution, before) {
       const state = states.get(agent.id);
       if (state === undefined) return;
       state.touchedDocs.add(normalized);
-      if (config.digestFiles.some(
+      // Which documents count: the four contracts (inlined state documents + the rule file),
+      // not just the inlined three — a session that only rewrites its rules has documented
+      // itself too, and the refusal names the rule file as one way out.
+      const cwd = agent.session?.header?.cwd;
+      const documents = typeof cwd === 'string' && cwd.length > 0 ? contractDocuments(cwd, config) : config.digestFiles;
+      if (documents.some(
         (document) => normalized === document.toLowerCase() || normalized.endsWith(`/${document.toLowerCase()}`),
       )) {
         state.docSinceCompaction = true;
+        // The exemption is granted for the tree as it stands: while HEAD stays put, the documents
+        // describe it. Recorded here so the commit guard can tell "this write" from "any write
+        // earlier in the session" — an exemption that never expires would let a session commit
+        // code-only changes forever after one document write.
+        state.docWriteHead = typeof cwd === 'string' && cwd.length > 0 ? currentHead(cwd) : undefined;
         // Any document write closes the post-compaction window for the checkpoint guard.
         state.compacted = false;
         // The drift was written down; the next refresh will re-read the documents.
@@ -332,10 +345,21 @@ function predictedContent(execution, before) {
           if (agent === undefined) return undefined;
           const state = states.get(agent.id);
           if (state === undefined) return undefined;
-          if (state.docSinceCompaction) return undefined;
+          const cwd = agent.session?.header?.cwd;
+          const inRepo = typeof cwd === 'string' && cwd.length > 0;
+          // Git answers both questions live rather than from the digest cache: the digest refreshes
+          // on a timer, and a commit that landed a second ago must not be invisible here.
+          const head = inRepo ? currentHead(cwd) : undefined;
+          const live = inRepo ? commitsSinceDocumentWrite(cwd, config) : undefined;
+          // A document write excuses the commits that were already there when it happened, and only
+          // those: once HEAD moves past it, the write no longer describes the repository.
+          const exempt = state.docSinceCompaction === true
+            && (head === undefined || state.docWriteHead === undefined || head === state.docWriteHead);
+          if (exempt) return undefined;
           // `compacted` is set by the real `compaction/end` event; it is not inferred from
           // the surface generation, which also changes for pruning and spill.
-          const stale = state.compacted === true || state.unrecordedCommits;
+          const behind = live === undefined ? state.unrecordedCommits === true : live > 0;
+          const stale = state.compacted === true || behind;
           if (!stale) return undefined;
           // "Update a contract document" is cheap to say and expensive to guess: a session that
           // has been editing source files all along reads its own writes as progress. The guard
@@ -345,14 +369,14 @@ function predictedContent(execution, before) {
             ? '本会话还没有用 write/edit 改过任何文件'
             : `本会话用 write/edit 改过的是 ${touched.slice(0, 4).map(shortPath).join(', ')}`
               + `${touched.length > 4 ? `, …（共 ${touched.length} 个）` : ''}`;
-          const expected = config.digestFiles.join(', ');
+          const expected = (inRepo ? contractDocuments(cwd, config) : config.digestFiles).join(', ');
           return [
             '项目锻造模式拒绝这次 `git commit`：这不是一个一致状态的检查点。',
             state.compacted === true
               ? '本会话被压缩过，此后没有任何合同文档被更新。'
-              : '仓库里有状态文档没有提到的提交。',
+              : '仓库里有合同文档没有提到的提交。',
             `${shown}；能解开这条的只有合同文档：${expected}——在其中任一份上记下当前状态即可。`,
-            '更新 `private/done.md`（以及随之变化的 `private/todo.md` / `private/plan.md`）：记下当前状态，',
+            '先更新状态文档（通常是 `done.md`，以及随之变化的 `todo.md` / `plan.md`）：记下当前状态，',
             '与 `git status`、`git log` 对账，把不符之处写进 Drift 一节，然后再提交。',
             '两点容易踩：**这条拒绝作用于整条命令**——把改文件与提交写在同一条 shell 调用里时，改文件根本不会执行，',
             '请把提交单独发一条；**只有用 write/edit 工具改合同文档才算数**，用脚本改文件不算。',

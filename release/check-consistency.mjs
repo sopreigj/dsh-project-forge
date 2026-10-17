@@ -22,6 +22,12 @@
  *    notice. Both inline paths (`release/check-runtime.mjs`) and relative markdown link targets
  *    are resolved against the tree.
  *
+ * 5. `cordis.patch.yml` installs this plugin by naming its config keys literally, and a key the
+ *    schema does not declare is rejected at install time — the exact shape of the 2026-10-16
+ *    resume failure. `check-preset-sync.mjs` cannot catch it: that script only compares rows against
+ *    the *shipped* preset, and this row is ours. The truth is derived from the source here
+ *    (`DEFAULTS`), not from a list of key names kept next to the check.
+ *
  * Usage: node release/check-consistency.mjs   (exit 1 on any mismatch)
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -157,7 +163,51 @@ for (const doc of PUBLIC_DOCS) {
     });
 }
 
-// ── 5. every script under release/ must at least parse ────────────────────
+// ── 5. the row that installs this plugin may only set keys the schema declares ─
+// Derived truth: `DEFAULTS` above is the set of keys the running plugin accepts. Reading the row's
+// keys out of the patch text is deliberately narrow — the install row is `- name: '<package>'`
+// followed by its own `config:` block, so indentation alone decides where that block ends.
+function rowConfigKeys(patchText, packageName) {
+  const lines = patchText.split(/\r?\n/);
+  const nameIdx = lines.findIndex((line) => line.trim() === `name: '${packageName}'`);
+  if (nameIdx === -1) return null;
+  const nameIndent = lines[nameIdx].search(/\S/);
+  let configIdx = -1;
+  for (let i = nameIdx + 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '') continue;
+    // Strictly less: a sibling key (`id`, `config`) sits at the *same* indent as `name`.
+    if (lines[i].search(/\S/) < nameIndent) break; // the row ended before any config block
+    if (lines[i].trim() === 'config:') { configIdx = i; break; }
+  }
+  if (configIdx === -1) return [];
+  const configIndent = lines[configIdx].search(/\S/);
+  const keys = [];
+  for (let i = configIdx + 1; i < lines.length; i += 1) {
+    const raw = lines[i];
+    if (raw.trim() === '' || raw.trim().startsWith('#')) continue;
+    const indent = raw.search(/\S/);
+    if (indent <= configIndent) break;
+    const match = /^([A-Za-z][\w]*):/.exec(raw.trim());
+    if (match !== null && indent === configIndent + 2) keys.push(match[1]);
+  }
+  return keys;
+}
+
+const PATCH = join(root, 'cordis.patch.yml');
+const INSTALL_ROW = 'dsh-project-forge';
+const patchKeys = existsSync(PATCH) ? rowConfigKeys(readFileSync(PATCH, 'utf8'), INSTALL_ROW) : null;
+if (patchKeys === null) {
+  // Not vacuous: the check is only meaningful while the row exists, so its absence fails here.
+  failures.push(`cordis.patch.yml 里找不到装了 ${INSTALL_ROW} 的那一行——本检查会失去对象，请确认安装行是否被改名`);
+} else {
+  for (const key of patchKeys) {
+    if (!Object.hasOwn(DEFAULTS, key)) {
+      failures.push(`cordis.patch.yml 的 ${INSTALL_ROW} 行设了 schema 里没有的键「${key}」——安装时会被拒收（改名后必须同步这一行）`);
+    }
+  }
+}
+
+// ── 6. every script under release/ must at least parse ────────────────────
 // This exists because a syntax error in one of them reached a real release run: nothing in the
 // suite imports these scripts, so nothing had ever parsed them. `node --check` is enough for the
 // .mjs ones; the PowerShell file is parsed with its own AST parser, and when no PowerShell host is
@@ -193,4 +243,4 @@ if (failures.length > 0) {
   console.error(`\nconsistency: ${failures.length} 处不一致`);
   process.exit(1);
 }
-console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词；文档 ${docPaths} 处路径引用真实存在；release/ 下 ${parsedScripts} 个脚本可解析${powershellSkips ? `，${powershellSkips} 个 .ps1 因本机没有 PowerShell 未检查` : ''}）`);
+console.log(`consistency: clean（配置表 ${documented.size} 个字段 ↔ schema；技能两份副本一致；公开面 ${scanned} 个文件无退役用词；文档 ${docPaths} 处路径引用真实存在；安装行 ${patchKeys?.length ?? 0} 个配置键 ⊆ schema；release/ 下 ${parsedScripts} 个脚本可解析${powershellSkips ? `，${powershellSkips} 个 .ps1 因本机没有 PowerShell 未检查` : ''}）`);

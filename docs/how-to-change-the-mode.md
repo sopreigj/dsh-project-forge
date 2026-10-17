@@ -114,4 +114,9 @@ node release/check-runtime.mjs --session <会话日志> --copy <profile>\node_mo
 pwsh release/publish.ps1 -PublicRepo <公开仓> -DshSource <dsh-checkout> -NoPush
 ```
 
+机器相关的值也可以只配一次：按 `release/publish.config.example.json` 的形状，在同一个 `release/` 目录下
+建一份 `publish.config.json`（它被 gitignore，镜像时也排除），之后同样的命令不带任何参数即可。
+`excludeDirs` / `excludeFiles` 也在这份配置里——默认就是 `.git`、`private/`（状态边界）、
+`.gitignore` 与这份配置自己。
+
 发布脚本会在镜像**之前**重跑这四门检查，任一不过就 `throw`、绝不触碰发布副本。

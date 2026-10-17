@@ -141,7 +141,9 @@ const PUBLIC_DOCS = [
   ...readdirSync(join(root, 'docs')).filter((name) => name.endsWith('.md')).map((name) => `docs/${name}`),
 ];
 const TOP_LEVEL = ['docs', 'plugin', 'release', 'skills', 'review', 'locale'];
-const INLINE_PATH = new RegExp(`(?<![\\w./-])((?:${TOP_LEVEL.join('|')})/[\\w./-]*\\.(?:mjs|cjs|js|md|json|ya?ml|ps1))`, 'g');
+// 扩展名按**长到短**排列：正则候选按书写顺序取第一个匹配，把 `js` 放在 `json` 之前会让
+// `docs/x.json` 被截成 `docs/x.js`，于是每一处 .json/.jsonl 引用都被报成不存在的路径。
+const INLINE_PATH = new RegExp(`(?<![\\w./-])((?:${TOP_LEVEL.join('|')})/[\\w./-]*\\.(?:jsonl|json|ya?ml|mjs|cjs|ps1|md|js))`, 'g');
 const MARKDOWN_LINK = /\]\(([^)\s]+)\)/g;
 
 let docPaths = 0;

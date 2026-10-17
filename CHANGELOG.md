@@ -27,6 +27,12 @@
 
 - **宿主下限：DeepSeek Harness ≥ 0.2.1-rc**。digest 依赖 context 级的 `interpolate: false`（见 V11）。
 ## [Unreleased]
+### Changed
+
+- 发布流程拆成"做法 / 本机约定"：`release/publish.ps1` 只跑检查与镜像，目标目录、DSH 源码树、额外排除项
+  从 `release/publish.config.json` 读取——那份文件被 gitignore 且镜像时排除，仓库只带 `publish.config.example.json`。
+  镜像规则也写成"除 `.git`、状态边界 `private/`、用户配置项之外的全部内容"。
+
 
 ### Fixed
 - digest 不再改写文档里的 `{{`：宿主 0.2.1 起 `systemPrompt.context` 也尊重 `interpolate: false`，旧宿主上必要的 `{ {` 拆分如今只剩副作用（引用 Vue/mustache 的文档会被改坏）。

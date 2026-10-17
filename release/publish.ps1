@@ -61,13 +61,24 @@ if ($LASTEXITCODE -ge 8) { throw "robocopy 失败 exit=$LASTEXITCODE" }
 Push-Location $PublicRepo
 try {
   git add -A
-  if (-not (git status --porcelain)) { Write-Output '无改动，跳过提交'; return }
-  git -c user.email=forge@local -c user.name="project-forge" commit -qm $Message
+  # 无改动只表示"不用提交"，不表示"不用推送"：已经提交但没推的提交必须照样推出去，
+  # 否则这条通道会在下一次镜像时假装成功，而远端一直停在旧版本。
+  if (git status --porcelain) {
+    git -c user.email=forge@local -c user.name="project-forge" commit -qm $Message
+  } else {
+    Write-Output '无改动，跳过提交（继续检查是否有未推送的提交）'
+  }
   if ($NoPush) {
     Write-Output "mirrored and committed locally; not pushed (pass without -NoPush to push)"
     Write-Output "  $(git log --oneline -1)"
     return
   }
+  $unpushed = [int](git rev-list --count 'origin/main..HEAD')
+  if ($unpushed -eq 0) {
+    Write-Output "远端已是最新: $(git log --oneline -1)"
+    return
+  }
+  Write-Output "待推送提交: $unpushed"
   git push
   Write-Output "已发布: $(git log --oneline -1)"
 } finally {

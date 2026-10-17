@@ -27,7 +27,24 @@
 
 - **宿主下限：DeepSeek Harness ≥ 0.2.1-rc**。digest 依赖 context 级的 `interpolate: false`（见 V11）。
 ## [Unreleased]
+
+## [3.5.0] - 2026-10-17
+
+### Added
+
+- **第八门检查 `release/check-installed.mjs`：把「装进去没有」变成可失败的判定**。它扫
+  `~/.dsh/profiles/*/node_modules` 下的 `dsh-project-forge` 与 `@local/dsh-project-forge`，
+  用 `lstat` 判「有没有条目」、`realpath` 判「目标还在不在」，分 `dev` / `copy` / `dangling` 三类，
+  摘要里报对象数——一个条目都没扫到也会失败，因为「没找到」和「装好了」长得一模一样。
+  悬空条目即 exit 1：那样的 profile 列着一个永远加载不起来的 bundle，而此前所有检查都是绿的。
+- **安装面处置**：desktop 与 headless 里指向不存在目标的 `@local/dsh-project-forge` 条目已删除
+  （两份清单从未引用它，只有旧的 `pnpm-lock.yaml` 留着那一段）；改环境前的清单备份在状态边界内。
+
 ### Changed
+
+- **digest 的「状态文档落后于仓库」判据换成 git 自己的答案**：原先要求「某个提交的 hash 出现在
+  合同文档里」，这等于规定项目必须把提交号写进散文——本仓恰好相反，于是每轮都报「文档落后」。
+  现在数的是「最后一次改了合同文档的提交之上还有几个提交」，文档里不必出现任何 hash。
 
 - 发布流程拆成"做法 / 本机约定"：`release/publish.ps1` 只跑检查与镜像，目标目录、DSH 源码树、额外排除项
   从 `release/publish.config.json` 读取——那份文件被 gitignore 且镜像时排除，仓库只带 `publish.config.example.json`。

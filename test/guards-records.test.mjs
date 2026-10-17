@@ -45,6 +45,30 @@
     undefined,
     'the same guard allows the append — the previous text is the prefix',
   );
+  // `edit` can break the same promise: it rewrites in place, so the guard predicts its result the
+  // same way it predicts a `write` and refuses one that drops existing records (review P1/D6).
+  const editRefusalFor = (oldText, newText) => appendRecord.guards
+    .map((guard) => guard({
+      name: 'edit',
+      arguments: { file_path: recordPath, old_string: oldText, new_string: newText },
+      agent: appendAgent,
+    }))
+    .find((answer) => typeof answer === 'string' && answer.includes('只追加'));
+  writeFileSync(recordPath, existing);
+  assert.equal(
+    typeof editRefusalFor('{"id":"J1"', '{"id":"J9"'),
+    'string',
+    'an edit that rewrites an existing record is refused — edit is not a way around the rule',
+  );
+  assert.equal(
+    editRefusalFor('checkpoint"}\n', 'checkpoint"}\n{"id":"J2","kind":"checkpoint"}\n'),
+    undefined,
+    'an edit that appends past the last record passes',
+  );
+  // Appending through `replace_all` keeps the old text as a prefix too, so it passes; the same
+  // option used to rewrite every record does not.
+  assert.equal(editRefusalFor('"kind"', '"kind"', ), undefined, 'a no-op edit passes (prefix unchanged)');
+
   console.log('append-only guard: OK');
 }
 

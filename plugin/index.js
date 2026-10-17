@@ -96,6 +96,7 @@ import {
   displayPath,
   readIfPresent,
   safeId,
+  commitsSinceDocumentWrite,
 } from './shared/index.js';
 
 /** Cordis plugin name. */
@@ -233,21 +234,17 @@ export function apply(ctx, config) {
     }
 
     const blocks = [DIGEST_HEADING, '', parts.join('\n\n')];
-    const documentText = parts.join('\n').toLowerCase();
     if (config.repoStateInDigest !== false) {
       const repo = readRepoState(cwd, config.repoCommitWindow);
       if (repo !== undefined) {
         blocks.push('', REPO_HEADING, '', repo);
         state.repoLog = repo;
         state.repoHead = /HEAD: (\S+)/.exec(repo)?.[1];
-        // Drift signal, computed from what is in front of the model: newer commits that
-        // none of the documents mention. A commit older than one the documents do cite
-        // counts as covered, so the signal stays strict and does not nag forever.
-        const hashes = [...repo.matchAll(/^- ([0-9a-f]{7,12}) /gm)].map((match) => match[1]);
-        const newestCited = hashes.findIndex((hash) => documentText.includes(hash));
-        const unrecorded = newestCited === -1
-          ? (hashes.length > 0 && state.docSinceCompaction !== true ? hashes.length : 0)
-          : hashes.slice(0, newestCited).length;
+        // Drift signal: commits sitting on top of the newest commit that touched a contract
+        // document. Git answers "do the documents describe the repository?" without requiring
+        // the project to write commit hashes into its prose — the hash test this replaces
+        // nagged forever in a repository that deliberately keeps hashes out of its documents.
+        const unrecorded = commitsSinceDocumentWrite(cwd, config) ?? 0;
         state.unrecordedCommits = unrecorded > 0;
         state.unrecordedCount = unrecorded;
       } else {

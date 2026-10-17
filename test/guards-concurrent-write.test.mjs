@@ -57,15 +57,32 @@ import { digest } from './digest.test.mjs';
     assert.equal(cwGuard({ name: 'write', arguments: { file_path: join(repo, 'done.md') }, agent: agentB }), undefined, 'B takes over a stale claim');
     assert.ok(!exs(join(claimDir, 'done.md.json')) || JSON.parse(rfs(join(claimDir, 'done.md.json'), 'utf8')).owner === agentB.session.header.id, 'the stale claim is deleted or re-owned by B, never left as residue');
 
-    // A successful commit releases every claim in the project.
+    // A successful commit releases THIS session's claims whose files landed in that commit —
+    // and only those. A parallel session's claim is the record that ITS work is still mid-edit;
+    // clearing the whole directory (the old behaviour) re-opens the race this guard closes.
     const commitListeners = cwRecord.listeners.filter((entry) => entry.name === 'tools/result');
     assert.ok(commitListeners.length > 0, 'tools/result listeners exist');
     assert.ok(exs(join(claimDir, 'a.py.json')), 'a.py is claimed before the commit');
     for (const listener of commitListeners) {
       listener.handler({ name: 'pwsh', arguments: { command: 'git commit -m "release"' }, agent: agentA }, { isError: false });
     }
-    assert.ok(!exs(join(claimDir, 'a.py.json')), 'a commit releases every claim');
-    assert.ok(!exs(join(claimDir, 'b.py.json')), 'including claims held by other sessions');
+    assert.ok(!exs(join(claimDir, 'a.py.json')), "A's own claim is released by A's commit");
+    assert.ok(exs(join(claimDir, 'b.py.json')), "another session's claim survives A's commit");
+    assert.ok(exs(join(claimDir, 'done.md.json')), 'the claim B took over also survives');
+
+    // A claim that cannot be written must refuse the write. "Claim failed, carry on" is the one
+    // answer that cannot be right: two sessions would then write the same file believing each
+    // holds it. The atomic rename in writeClaim is what makes this state detectable at all.
+    {
+      const { rmSync, writeFileSync: wfs2 } = await import('node:fs');
+      rmSync(claimDir, { recursive: true, force: true });
+      wfs2(claimDir, 'not a directory\n');
+      const refusedUnwritable = cwGuard({ name: 'write', arguments: { file_path: join(repo, 'b.py') }, agent: agentA });
+      assert.equal(typeof refusedUnwritable, 'string', 'a write is refused when its claim cannot be written');
+      assert.ok(/认领记录写不进去/.test(refusedUnwritable), 'the refusal names the claim that could not be written');
+      assert.ok(!/已被会话/.test(refusedUnwritable), 'it is not mistaken for a claim conflict');
+      rmSync(claimDir, { force: true });
+    }
 
     // Jurisdiction is "project content", not "source-looking file name": a tracked `.txt`
     // is claimed and protected, and an untracked artifact is not. Both halves matter — the

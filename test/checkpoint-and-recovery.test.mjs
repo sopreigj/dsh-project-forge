@@ -11,15 +11,18 @@
   plugin.apply(guardCtx, standard.validate({}).value);
   const { agent } = createdAgent(guardRecord, project);
   const { agent: guardAgent } = createdAgent(guardRecord, project, 'session-guard');
-  const commitGuard = guardRecord.guards.find(
-    (guard) => typeof guard({ name: 'pwsh', arguments: { command: 'git commit -m x' }, agent: guardAgent }) === 'string',
-  ) ?? guardRecord.guards.find(
-    (guard) => guard({ name: 'pwsh', arguments: { command: 'git commit -m x' }, agent: guardAgent }) !== undefined,
-  );
   const commit = (target) => ({ name: 'pwsh', arguments: { command: 'git commit -m "x"' }, agent: target });
   const shell = (command, target) => ({ name: 'pwsh', arguments: { command }, agent: target });
+  // Ask every guard at once; which one refuses is the guard's own business, and the assertions
+  // below pin the checkpoint refusal by its text.
+  const commitGuard = (execution) => guardRecord.guards.map((guard) => guard(execution)).find(Boolean);
+  const checkpointRefusal = (target) => guardRecord.guards
+    .map((guard) => guard(commit(target)))
+    .find((verdict) => typeof verdict === 'string' && verdict.includes('不是一个一致状态的检查点'));
 
-  // Before any compaction: a commit is allowed (this repository is consistent).
+  // Before any compaction a repository whose documents are in sync may commit.
+  assert.equal(checkpointRefusal(guardAgent), undefined, 'no checkpoint refusal before compaction');
+
   const preStep = guardRecord.listeners.filter((entry) => entry.name === 'agent/pre-step');
   const next = async () => ({ kind: 'proceed', messages: [{ id: 'u1', role: 'user' }] });
   const guardEvents = agentListeners(guardAgent).find((entry) => entry.name === 'session/event');

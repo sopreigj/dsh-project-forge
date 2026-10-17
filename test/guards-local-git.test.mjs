@@ -5,6 +5,7 @@
  * into throwaway repositories to prove what the guards refuse.
  */
 import { guardAgent, guardRecord } from './checkpoint-and-recovery.test.mjs';
+import { pushTargetUrl } from '../plugin/shared/index.js';
 
 
   // ── Guard A: local-only git, with no false positives ─────────────────────────
@@ -115,6 +116,30 @@ import { guardAgent, guardRecord } from './checkpoint-and-recovery.test.mjs';
     // An explicit-URL push matches the URL form directly.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/* ×1\n');
     assert.equal(pushGuard(shell('git push https://github.com/sopreigj/nhentai-downloader.git main', gAgent)), undefined, 'explicit-URL push covered by glob grant');
+
+    // The grant is matched on **host + path**, not as a substring of the URL: a remote that merely
+    // contains the fragment is a different remote (review P0-3/D5).
+    writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: github.com/sopreigj/nhentai-downloader ×1\n');
+    assert.ok(
+      String(pushGuard(shell('git push https://evil.example/github.com/sopreigj/nhentai-downloader.git main', gAgent))).includes('仅本地'),
+      'a URL that only contains the granted path is not covered',
+    );
+    // A quoted target is the target: the command guards drop quoted text, but the push target must
+    // not, or `git push "https://…"` would silently fall back to `origin` (review P0-3/D5). The
+    // quoted URL below points somewhere the grant does NOT cover, while `origin` points at the
+    // granted repository — so dropping the quotes would flip this refusal into a pass.
+    assert.ok(
+      String(pushGuard(shell('git push "https://github.com/someone-else/other.git" main', gAgent))).includes('仅本地'),
+      'a quoted URL is the push target, not a reason to fall back to origin',
+    );
+    assert.ok(rfs2(join(repo, '.agents', 'steward.md'), 'utf8').includes('push allowed'), 'the grant was not consumed');
+    // The guard-level assertion above cannot tell the two implementations apart when `origin`
+    // also matches a grant, so the resolver is checked directly: a quoted URL is the target.
+    assert.equal(
+      pushTargetUrl(repo, 'git push "https://github.com/someone-else/other.git" main'),
+      'https://github.com/someone-else/other.git',
+      'pushTargetUrl keeps a quoted URL instead of falling back to origin',
+    );
 
     // Force pushes are never covered by a grant, even with grants in stock.
     writeFileSync(join(repo, '.agents', 'steward.md'), 'push allowed: *\n');

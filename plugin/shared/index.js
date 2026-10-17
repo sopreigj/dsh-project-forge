@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -72,6 +72,32 @@ export function runGitOrNothing(cwd, args) {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * How many commits sit on top of the newest commit that touched a contract document. §9 asks
+ * "do the documents describe the repository?", and the honest answer is git's: everything after
+ * the last commit that changed a document is work no document write has accompanied yet.
+ *
+ * This replaced a hash test ("a recent commit whose hash the documents mention"). That test
+ * encodes a project convention — put commit hashes in your prose — and reports every commit as
+ * unrecorded forever in a project that deliberately keeps hashes out of its documents.
+ * @param cwd - the repository root.
+ * @param config - the validated row config.
+ * @returns the count (0 when the documents are current), or `undefined` when git cannot answer.
+ */
+export function commitsSinceDocumentWrite(cwd, config) {
+  const head = runGitOrNothing(cwd, ['rev-parse', 'HEAD']);
+  if (head === undefined) return undefined;
+  const documents = config.digestFiles.map(
+    (name) => displayPath(cwd, resolveStateFile(cwd, config, name).absolute),
+  );
+  const last = (runGitOrNothing(cwd, ['log', '-1', '--format=%H', '--', ...documents]) ?? '').trim();
+  if (last === '') return undefined; // no commit has touched the documents yet
+  if (last === head.trim()) return 0;
+  const counted = (runGitOrNothing(cwd, ['rev-list', '--count', `${last}..HEAD`]) ?? '').trim();
+  const parsed = Number(counted);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
@@ -252,18 +278,37 @@ export function readClaim(cwd, config, rel) {
 }
 
 /**
- * Write (or overwrite) one claim. Best-effort: a claim that cannot be written is not fatal.
+ * Write (or overwrite) one claim. Atomic, and the caller must look at the result.
+ *
+ * Two properties matter here, both learned the hard way:
+ *   · **Atomic**: write a sibling temp file and rename it into place. `rename` within one
+ *     directory is atomic on both NTFS and POSIX, so a reader never parses half a JSON
+ *     document and concludes "no claim" — a torn claim file used to make a *held* file look
+ *     free, which is the one failure this whole mechanism exists to prevent.
+ *   · **Reportable**: it returns false instead of swallowing the error, because a claim that
+ *     could not be written means the writer does NOT hold the file. The guard turns that
+ *     into a refusal; silently proceeding would let two sessions write the same file.
  *
  * The record carries the repo-relative `path` so the digest can name the file without
  * decoding the sanitized file name.
+ *
+ * @returns true when the claim is on disk, false when it could not be written.
  */
 export function writeClaim(cwd, config, rel, claim) {
+  const p = claimPath(cwd, config, rel);
+  const temp = `${p}.${process.pid}.tmp`;
   try {
-    const p = claimPath(cwd, config, rel);
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify({ ...claim, path: rel }));
+    writeFileSync(temp, JSON.stringify({ ...claim, path: rel }));
+    renameSync(temp, p);
+    return true;
   } catch {
-    /* best-effort */
+    try {
+      unlinkSync(temp);
+    } catch {
+      /* nothing to clean up */
+    }
+    return false;
   }
 }
 
@@ -337,7 +382,9 @@ export function checkPushGrant(cwd, config, command) {
     try {
       writeFileSync(stewardPath, lines.join('\n'));
     } catch {
-      /* a grant we could not persist still allowed exactly this push — acceptable */
+      // A grant that could not be persisted was NOT consumed, so it must not authorize the push:
+      // otherwise one consent silently becomes a standing permission (review P0-3/D5).
+      return false;
     }
     return true;
   }
@@ -348,18 +395,68 @@ export function checkPushGrant(cwd, config, command) {
 export const GRANT_LINE = /^\s*push\s+allowed:\s*(\S+?)(?:\s+×(\d+))?\s*$/im;
 
 /**
- * Whether a grant glob covers one remote URL. The grant names a path fragment (e.g.
- * `github.com/sopreigj/nhentai-downloader`), not a full URL — any URL that CONTAINS the
- * fragment is covered, so `https://.../nhentai-downloader.git` and `git@github.com:...` both
- * match. `*` crosses any run of characters. Case-insensitive, because hosts are.
+ * The host-and-path identity of a remote URL, normalised for comparison: scheme, user and a
+ * trailing `.git` do not distinguish two remotes.
+ *   https://github.com/o/r.git → github.com/o/r      git@github.com:o/r → github.com/o/r
+ * @returns the identity, or `undefined` when the URL is not a remote shape.
+ */
+export function remoteIdentity(url) {
+  const match = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/\s]+@)?([^/:\s]+)[:/]([^\s]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  if (match === null) return undefined;
+  return `${match[1].toLowerCase()}/${match[2].toLowerCase().replace(/^\/+/, '')}`;
+}
+
+/**
+ * Whether a grant glob covers one remote URL.
+ *
+ * The comparison is on **host + path**, not on the raw string: a substring test let
+ * `https://evil.example/github.com/o/r` match a grant for `github.com/o/r` (review P0-3/D5).
+ * A glob may name a host alone (`github.com`), a host and path (`github.com/o/r`), a whole URL,
+ * or `*`; `*` crosses any run of characters inside the path.
  */
 export function grantMatches(glob, url) {
-  if (glob === '*') return true;
+  const identity = remoteIdentity(url);
+  if (identity === undefined) return false;
+  const trimmed = glob.trim();
+  if (trimmed === '*') return true;
+  const wanted = remoteIdentity(trimmed) ?? trimmed.toLowerCase().replace(/\/+$/, '');
+  if (!wanted.includes('/')) return identity.split('/')[0] === wanted;
   const regex = new RegExp(
-    glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*'),
+    `^${wanted.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`,
     'i',
   );
-  return regex.test(url);
+  return regex.test(identity);
+}
+
+/**
+ * Split a command line into tokens, keeping what quotes protected: a quoted URL is one token
+ * with the quotes removed. `stripQuoted` (used by the command guards) deliberately drops quoted
+ * text, which is why the push target must not be read through it — `git push "https://…"` then
+ * looked like a bare `git push` and fell back to `origin` (review P0-3/D5).
+ */
+export function quoteAwareTokens(command) {
+  const tokens = [];
+  let current = '';
+  let quote = undefined;
+  for (const character of command) {
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current.length > 0) tokens.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  if (current.length > 0) tokens.push(current);
+  return tokens;
 }
 
 /**
@@ -368,7 +465,7 @@ export function grantMatches(glob, url) {
  * `origin`). `undefined` when it cannot be resolved.
  */
 export function pushTargetUrl(cwd, command) {
-  const tokens = stripQuoted(command).split(/\s+/);
+  const tokens = quoteAwareTokens(command);
   const at = tokens.findIndex((token) => token === 'push');
   let target = '';
   for (let index = at + 1; index < tokens.length; index++) {

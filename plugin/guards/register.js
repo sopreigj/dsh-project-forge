@@ -178,6 +178,28 @@ function commonPrefixLength(a, b) {
   return index;
 }
 
+/**
+ * What a `write` or `edit` call would leave on disk, given the text that is there now.
+ * Both tools can break an append-only record, so both are predicted the same way; `edit` is
+ * simulated in place (first occurrence, or every one with `replace_all`) because the guard may
+ * only judge what it can compute — and this is computable (review P1/D6).
+ * @returns the resulting text, or `undefined` when this call cannot be predicted.
+ */
+function predictedContent(execution, before) {
+  const args = execution.arguments ?? {};
+  if (execution.name === 'write') {
+    return typeof args.content === 'string' ? args.content : undefined;
+  }
+  if (execution.name !== 'edit') return undefined;
+  const oldText = args.old_string;
+  const newText = args.new_string;
+  if (typeof oldText !== 'string' || typeof newText !== 'string' || oldText.length === 0) return undefined;
+  if (!before.includes(oldText)) return undefined;
+  if (args.replace_all === true) return before.split(oldText).join(newText);
+  const at = before.indexOf(oldText);
+  return before.slice(0, at) + newText + before.slice(at + oldText.length);
+}
+
   // ── Guard: append-only records ───────────────────────────────────────────────
   // `journal.jsonl` and `tortuous.jsonl` are read as "one record per line, appended only"
   // (§4.0.2). A write that does not keep the previous text as a prefix breaks that promise:
@@ -188,14 +210,15 @@ function commonPrefixLength(a, b) {
     ctx.effect(
       () =>
         ctx.tools.guard((execution) => {
-          if (execution.name !== 'write') return undefined;
+          if (execution.name !== 'write' && execution.name !== 'edit') return undefined;
           const path = execution.arguments?.file_path;
-          const content = execution.arguments?.content;
-          if (typeof path !== 'string' || typeof content !== 'string') return undefined;
+          if (typeof path !== 'string') return undefined;
           const normalized = path.replace(/\\/g, '/').toLowerCase();
           if (!records.some((name) => normalized === name || normalized.endsWith(`/${name}`))) return undefined;
           const before = readIfPresent(path);
           if (before === undefined || before.length === 0) return undefined;
+          const content = predictedContent(execution, before);
+          if (content === undefined) return undefined;
           if (content.startsWith(before)) return undefined;
           // The refusal has to be actionable: "keep the old text as a prefix" leaves the model
           // guessing where its draft went wrong, and the record file is exactly the place where
@@ -433,17 +456,31 @@ function commonPrefixLength(a, b) {
   // and takes over a stale (dead-owner) claim. §12.1's single-document-owner rule keeps
   // most parallel agents off these files entirely; this guard is the hard backstop.
   if (config.guardConcurrentWrite !== false && ctx.tools !== undefined) {
-    // A successful commit releases every claim in this project: the work has landed, so no
-    // file is mid-edit any more. Without this, claims from a crashed or finished session
-    // sat on disk until the 30-minute staleness window — a real incident on 2026-10-08 left
-    // 82 stale claims behind and blocked a parallel session five times.
+    // A successful commit releases THIS session's claims whose files landed in that commit.
+    // It must not touch anyone else's: a parallel session's claim is the record that its work
+    // is still mid-edit, and wiping it re-opens the very race this guard closes (a second
+    // writer then silently overwrites uncommitted work). The old code cleared the whole
+    // directory — correct for one agent, wrong the moment two run at once.
     ctx.on('tools/result', (execution, result) => {
       if (result?.isError) return;
       if (execution.name !== 'pwsh' && execution.name !== 'bash') return;
       if (!isCommitCommand(execution.arguments?.command)) return;
       const cwd = execution.agent?.session?.header?.cwd;
       if (typeof cwd !== 'string' || cwd.length === 0) return;
-      clearClaims(cwd, config);
+      const self = agentIdentity(execution.agent);
+      const landed = headFiles(cwd);
+      for (const path of claimFiles(cwd, config)) {
+        try {
+          const claim = JSON.parse(readFileSync(path, 'utf8'));
+          if (typeof claim?.owner !== 'string' || claim.owner !== self) continue;
+          // When git can tell us what landed, require the claim's file to be in it: a file the
+          // session claimed but did not commit is still mid-edit and keeps its claim.
+          if (landed !== undefined && typeof claim.path === 'string' && !landed.has(claim.path)) continue;
+          unlinkSync(path);
+        } catch {
+          /* unreadable entries stay and expire on their own */
+        }
+      }
       // The work landed, so the takeover notices have served their purpose.
       const state = states.get(execution.agent?.id);
       if (state !== undefined) state.takeovers = [];
@@ -515,7 +552,7 @@ function commonPrefixLength(a, b) {
             return [
               `项目锻造模式拒绝写入 \`${rel}\`：它已被会话 ${shortId(claim.owner)} 认领。`,
               '那个会话正在改它；第二个写者会静默覆盖它的成果。',
-              '先协调（或请它提交 —— 一次成功提交会释放所有认领），然后重试。见 §12。',
+              '先协调（或请它提交它自己那边 —— 一次成功提交只释放它提交的那些认领），然后重试。见 §12。',
             ].join(' ');
           }
           // The dirty check is the catch-all for changes whose writer this guard never saw: a hand
@@ -532,8 +569,16 @@ function commonPrefixLength(a, b) {
               '见协议 §12。',
             ].join(' ');
           }
-          // Take or keep the claim, then allow the write.
-          writeClaim(cwd, config, rel, { owner: self, time: Date.now() });
+          // Take or keep the claim, then allow the write. A claim that cannot be written means
+          // we do NOT hold the file, so the write must be refused rather than silently racing
+          // another session (the old code swallowed the error and let both writers through).
+          if (!writeClaim(cwd, config, rel, { owner: self, time: Date.now() })) {
+            return [
+              `项目锻造模式拒绝写入 \`${rel}\`：认领记录写不进去（\`${relative(cwd, claimPath(cwd, config, rel)).replace(/\\/g, '/')}\`）。`,
+              '认领是并发写者之间的唯一凭据——写不进去就不能假装自己持有这个文件。',
+              '检查那个目录是否可写（只读、被占用、磁盘满），修好再重试。见协议 §12。',
+            ].join(' ');
+          }
           return undefined;
         }),
       'project-forge.concurrentWriteGuard()',
@@ -647,18 +692,24 @@ function clearStaleClaims(cwd, config) {
 }
 
 /**
- * Remove every claim in one project. Called after a successful commit: the work has landed,
- * so no claim is mid-edit any more.
+ * The repo-relative paths committed by HEAD, or undefined when git cannot say.
+ *
+ * `--no-commit-id --name-only -r` lists exactly the files that commit touched (not the whole
+ * tree); `core.quotePath=false` keeps non-ASCII names raw so they compare equal to claim paths.
+ * Undefined is not fatal: the caller then falls back to "release my own claims", which is still
+ * the safe half of the rule — it never touches another session's claim.
+ *
  * @param cwd - the project root.
- * @param config - the validated row config.
+ * @returns a Set of forward-slash paths, or undefined.
  */
-function clearClaims(cwd, config) {
-  for (const path of claimFiles(cwd, config)) {
-    try {
-      unlinkSync(path);
-    } catch {
-      /* best-effort */
-    }
+function headFiles(cwd) {
+  try {
+    const out = execFileSync('git', ['-C', cwd, '-c', 'core.quotePath=false', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return new Set(out.split('\n').map((line) => line.trim()).filter((line) => line.length > 0));
+  } catch {
+    return undefined;
   }
-
 }

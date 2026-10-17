@@ -5,6 +5,8 @@
  * into throwaway repositories to prove what the guards refuse.
  */
 
+import { execFileSync } from 'node:child_process';
+
 
 // ── Digest: documents, repository state, steward file ───────────────────────────
 
@@ -140,35 +142,46 @@
   rmSync(idxDir, { recursive: true, force: true });
   console.log('negative-knowledge index summarises every record: OK');
 
-  // The drift signal ("commits none of the documents mention") was computed for the checkpoint
-  // guard and never rendered: the model could only learn it when a commit was already refused.
-  // §9 wants the other order, so it is a conditionally present digest block. The fixture writes a
-  // synthetic reflog entry instead of a real commit, so the hash is known and no subprocess runs.
+  // The drift signal answers §9's question — "do the documents describe the repository?" — with
+  // git's own answer: commits sitting on top of the newest commit that touched a contract
+  // document. It used to test whether a document *mentions a commit hash*, which encodes a
+  // project convention and then nags forever in a project that deliberately keeps hashes out of
+  // its prose (C4). The fixture commits for real, so both sides of the rule are exercised.
   {
     const driftDir = mkdtempSync(join(tmpdir(), 'steward-drift-'));
     mkdirSync(join(driftDir, 'private'), { recursive: true });
-    writeFileSync(join(driftDir, 'private', 'plan.md'), '# plan\nno hashes here\n');
+    writeFileSync(join(driftDir, 'private', 'plan.md'), '# plan\n');
     writeFileSync(join(driftDir, 'private', 'todo.md'), '# todo\n');
-    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\nfresh\n');
+    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\n');
+    writeFileSync(join(driftDir, 'app.py'), 'print(1)\n');
     initRepo(driftDir);
-    const reflog = join(driftDir, '.git', 'logs', 'HEAD');
-    mkdirSync(join(driftDir, '.git', 'logs'), { recursive: true });
-    writeFileSync(
-      reflog,
-      `0000000000000000000000000000000000000000 abcdef1234567890abcdef1234567890abcdef12`
-      + ` steward <steward@test> 1700000000 +0000\tfeat: 文档没有提到的那个提交\n`,
+    const git = (...args) => execFileSync('git', args, { cwd: driftDir, stdio: 'pipe' });
+    const digestText = () => {
+      const { ctx: driftCtx, record: driftRecord } = makeCtx();
+      plugin.apply(driftCtx, standard.validate({ injectOnCompaction: false }).value);
+      const { contexts: driftContexts } = createdAgent(
+        driftRecord,
+        driftDir,
+        `session-drift-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      );
+      return driftContexts[0].text({});
+    };
+    const DRIFT = '## ⚠ 状态文档落后于仓库';
+
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore: 文档与代码一起进来');
+    assert.ok(
+      !digestText().includes(DRIFT),
+      'documents committed along with the change are current — no drift block',
     );
 
-    const { ctx: driftCtx, record: driftRecord } = makeCtx();
-    plugin.apply(driftCtx, standard.validate({ injectOnCompaction: false }).value);
-    const { contexts: driftContexts } = createdAgent(
-      driftRecord,
-      driftDir,
-      `session-drift-${Date.now().toString(36)}`,
-    );
-    const driftText = driftContexts[0].text({});
+    // Code only: the documents now describe a repository one commit out of date.
+    writeFileSync(join(driftDir, 'app.py'), 'print(2)\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'feat: 只改代码');
+    const driftText = digestText();
     assert.ok(
-      driftText.includes('## ⚠ 状态文档落后于仓库'),
+      driftText.includes(DRIFT),
       `the digest warns that the documents lag the repository: ${driftText.slice(0, 200)}`,
     );
     assert.ok(
@@ -176,20 +189,14 @@
       'and says how many commits the documents miss',
     );
 
-    // Citing the hash in a contract document acknowledges it — then the block must disappear,
-    // otherwise the warning would nag forever and stop being read.
-    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\n见 abcdef12 这个提交\n');
-    const { ctx: ackCtx, record: ackRecord } = makeCtx();
-    plugin.apply(ackCtx, standard.validate({ injectOnCompaction: false }).value);
-    const { contexts: ackContexts } = createdAgent(
-      ackRecord,
-      driftDir,
-      `session-ack-${Date.now().toString(36)}`,
-    );
-    const ackText = ackContexts[0].text({});
+    // Writing a document and committing it brings the documents back level; no hash has to be
+    // pasted anywhere for the block to clear.
+    writeFileSync(join(driftDir, 'private', 'done.md'), '# done\n记下这次改动\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'chore(state): 记下这次改动');
     assert.ok(
-      !ackText.includes('## ⚠ 状态文档落后于仓库'),
-      'citing the commit in a document clears the drift block',
+      !digestText().includes(DRIFT),
+      'committing a document update clears the drift block',
     );
     rmSync(driftDir, { recursive: true, force: true });
     console.log('drift block appears only while documents lag the repository: OK');

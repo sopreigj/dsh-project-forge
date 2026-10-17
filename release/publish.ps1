@@ -81,6 +81,9 @@ Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\
 Invoke-Check '公开面（本模式自己的隐私守卫）' "$dev\release\check-public-surface.mjs" @()
 Invoke-Check '提示词变量（patch 里的 {{...}} 必须已注册）' "$dev\release\check-prompt-variables.mjs" $presetArgs
 Invoke-Check '更新日志（package.json 的版本必须有条目）' "$dev\release\check-changelog.mjs" @()
+# The install surface is part of "does this publish work": a profile that lists a bundle whose
+# target is gone loads nothing at all, and nothing else notices.
+Invoke-Check '安装面（profile 里的条目必须指向真实存在的副本）' "$dev\release\check-installed.mjs" @()
 Invoke-Check '运行时（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @()
 Invoke-Check '运行时·review bundle（技能 frontmatter；customSkillDirs 的目标）' "$dev\release\check-runtime.mjs" @('--repo', "$dev\review")
 

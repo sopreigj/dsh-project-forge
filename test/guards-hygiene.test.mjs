@@ -225,6 +225,27 @@
     writeFileSync(join(pub, 'crawler.py'), 'BASE = "https://example.org/api/query"\n');
     assert.equal(refusalFor(), undefined, 'URLs in the public surface are allowed');
 
+    // The **staged** version is what a plain `commit` publishes, so cleaning the working tree
+    // afterwards must not hide it: reading only the worktree let `add` + cleanup publish the
+    // staged secret (review P0-3/D4).
+    writeFileSync(join(pub, 'app.py'), 'NOTES = "C:\\Users\\someone\\staged.txt"\n');
+    execFileSync('git', ['add', 'app.py'], { cwd: pub, stdio: 'pipe' });
+    writeFileSync(join(pub, 'app.py'), 'print(1)\n');
+    const stagedRefusal = refusalFor();
+    assert.equal(typeof stagedRefusal, 'string', 'the staged blob is scanned, not just the working tree');
+    assert.ok(stagedRefusal.includes('app.py'), 'the refusal names the staged file');
+    execFileSync('git', ['reset', '-q', 'app.py'], { cwd: pub, stdio: 'pipe' });
+    assert.equal(refusalFor(), undefined, 'unstaging the dirty version clears the refusal');
+
+    // A file too large for the scan is a refusal, not a silent pass: "we did not look" must never
+    // read as "nothing to see" (review D7).
+    writeFileSync(join(pub, 'big.txt'), `${'x'.repeat(300000)}\n`);
+    const bigRefusal = refusalFor();
+    assert.equal(typeof bigRefusal, 'string', 'an unscannable file refuses the commit');
+    assert.ok(bigRefusal.includes('big.txt'), 'the refusal names the oversized file');
+    assert.ok(bigRefusal.includes('隐私扫描'), 'the refusal explains that it could not be scanned');
+    rmSync(join(pub, 'big.txt'), { force: true });
+
     // Non-commit commands and other tools are untouched.
     assert.equal(pvRecord.guards.map((guard) => guard(shell('git status --short', pvAgent))).find(Boolean), undefined,
       'non-commit commands are untouched');

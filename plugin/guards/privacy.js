@@ -153,7 +153,7 @@ export function acknowledgesLayout(documents, facts) {
  * @param config - the validated row config.
  * @returns repository-relative candidate paths, capped.
  */
-export function publicSurfaceCandidates(cwd, config) {
+export function collectCandidates(cwd, config) {
   const listed = new Set();
   const staged = runGitOrNothing(cwd, ['diff', '--cached', '--name-only', '--diff-filter=ACMR']);
   for (const line of (staged ?? '').split('\n')) {
@@ -170,7 +170,40 @@ export function publicSurfaceCandidates(cwd, config) {
     if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1).replace(/\\"/g, '"');
     if (path.length > 0) listed.add(path);
   }
-  return [...listed].filter((path) => !isInsideStateDir(cwd, config, path)).slice(0, PRIVACY_SCAN_LIMIT);
+  return [...listed].filter((path) => !isInsideStateDir(cwd, config, path));
+}
+
+/**
+ * The capped candidate list — the scan's working set. `collectCandidates` is the uncapped one,
+ * kept separate so the scan can report that the cap hid files instead of silently truncating.
+ */
+export function publicSurfaceCandidates(cwd, config) {
+  return collectCandidates(cwd, config).slice(0, PRIVACY_SCAN_LIMIT);
+}
+
+/** The reasons a candidate is refused; the scan never silently skips one it could not read.
+ * They are Chinese because they reach the model inside a refusal message (D24). */
+export const OVERSIZE_REASON = `隐私扫描读不完（文件大于 ${PRIVACY_SCAN_BYTES} 字节），不能当作干净通过`;
+export const UNREADABLE_REASON = '隐私扫描读不到内容，不能当作干净通过';
+export const CANDIDATE_CAP_REASON = `隐私扫描的候选上限是 ${PRIVACY_SCAN_LIMIT} 个文件，超出部分没有扫描`;
+
+/** Read one text file, or nothing when it is absent. */
+function readTextOrNothing(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The paths the index already holds — the version a later commit will publish. */
+export function stagedPaths(cwd) {
+  const listed = new Set();
+  for (const line of (runGitOrNothing(cwd, ['diff', '--cached', '--name-only', '--diff-filter=ACMR']) ?? '').split('\n')) {
+    const path = line.trim();
+    if (path.length > 0) listed.add(path);
+  }
+  return listed;
 }
 
 /**
@@ -182,57 +215,79 @@ export function publicSurfaceCandidates(cwd, config) {
  *   the open-source rule allows a private value — with an example file beside it.
  * A file carrying `PRIVACY_ALLOW_MARKER` is exempt, so the mode's own sources and fixtures
  * can demonstrate what the guard refuses.
+ *
+ * Every version that could be published is scanned: the working tree (what `commit -a` stages)
+ * **and** the index blob (what a plain `commit` publishes). Reading only the working tree let
+ * `add` + clean-up-the-worktree publish the staged secret (review P0-3/D4).
  * @param cwd - the repository root.
  * @param config - the validated row config.
  * @param relPath - the candidate's repository-relative path.
+ * @param stagedText - the index blob's text, when the caller knows it is staged.
  * @returns the reasons this file is refused, empty when it is clean.
  */
-export function privacyFindings(cwd, config, relPath) {
+export function privacyFindings(cwd, config, relPath, stagedText) {
   const lower = relPath.toLowerCase();
   const extension = lower.slice(lower.lastIndexOf('.'));
   if (BINARY_EXTENSIONS.includes(extension)) return [];
-  let text;
-  try {
-    text = readFileSync(join(cwd, relPath), 'utf8');
-  } catch {
-    return [];
-  }
-  if (text.length > PRIVACY_SCAN_BYTES || text.includes('\u0000')) return [];
-  if (text.includes(PRIVACY_ALLOW_MARKER)) return [];
-  const normalised = text.replace(/\\/g, '/');
-  const reasons = [];
+  const versions = [];
+  const working = readTextOrNothing(join(cwd, relPath));
+  if (working !== undefined) versions.push(working);
+  if (stagedText !== undefined) versions.push(stagedText);
+  if (versions.length === 0) return [];
+  const reasons = new Set();
+  for (const text of versions) {
+    // Oversize is a refusal, not a skip: a file the scan cannot read is a file whose privacy
+    // nobody checked, and "we did not look" must never pass as "nothing to see" (review D7).
+    if (text.length > PRIVACY_SCAN_BYTES) {
+      reasons.add(OVERSIZE_REASON);
+      continue;
+    }
+    if (text.includes('\u0000')) continue;
+    if (text.includes(PRIVACY_ALLOW_MARKER)) continue;
+    const normalised = text.replace(/\\/g, '/');
 
-  if (HOME_PATH_PATTERNS.some(([pattern]) => pattern.test(normalised))) {
-    reasons.push('a home directory of the machine it was written on');
-  }
+    if (HOME_PATH_PATTERNS.some(([pattern]) => pattern.test(normalised))) {
+      reasons.add('a home directory of the machine it was written on');
+    }
 
-  if (SOURCE_EXTENSIONS.includes(extension)) {
-    const boundary = (config.stateDir ?? 'private').replace(/\\/g, '/').replace(/^\.\//, '');
-    if (boundary !== '.' && boundary.length > 0) {
-      const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const reach = new RegExp(`(^|[^A-Za-z0-9_.-])${escaped}/[A-Za-z0-9._-]`, 'i');
-      if (reach.test(normalised)) reasons.push(`a path into the state boundary (\`${boundary}/\`)`);
+    if (SOURCE_EXTENSIONS.includes(extension)) {
+      const boundary = (config.stateDir ?? 'private').replace(/\\/g, '/').replace(/^\.\//, '');
+      if (boundary !== '.' && boundary.length > 0) {
+        const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const reach = new RegExp(`(^|[^A-Za-z0-9_.-])${escaped}/[A-Za-z0-9._-]`, 'i');
+        if (reach.test(normalised)) reasons.add(`a path into the state boundary (\`${boundary}/\`)`);
+      }
+    }
+
+    if (!CONFIG_EXTENSIONS.includes(extension)
+      && SECRET_LITERAL_PATTERNS.some((pattern) => pattern.test(text))) {
+      reasons.add('a secret-looking literal outside a configuration file');
     }
   }
-
-  if (!CONFIG_EXTENSIONS.includes(extension)
-    && SECRET_LITERAL_PATTERNS.some((pattern) => pattern.test(text))) {
-    reasons.push('a secret-looking literal outside a configuration file');
-  }
-  return reasons;
+  return [...reasons];
 }
 
 /**
  * Run the privacy scan over the public surface a commit is about to publish.
  * @param cwd - the repository root.
  * @param config - the validated row config.
- * @returns one entry per offending file, `{ path, reasons }`.
+ * @returns one entry per offending file, `{ path, reasons }`, plus a synthetic entry when the
+ * candidate cap itself hid files from the scan (a truncated scan is not a clean scan).
  */
 export function scanPublicSurface(cwd, config) {
   const findings = [];
-  for (const path of publicSurfaceCandidates(cwd, config)) {
-    const reasons = privacyFindings(cwd, config, path);
+  const staged = stagedPaths(cwd);
+  const all = collectCandidates(cwd, config);
+  for (const path of all.slice(0, PRIVACY_SCAN_LIMIT)) {
+    const blob = staged.has(path) ? runGitOrNothing(cwd, ['show', `:${path}`]) : undefined;
+    const reasons = privacyFindings(cwd, config, path, blob);
     if (reasons.length > 0) findings.push({ path, reasons });
+  }
+  if (all.length > PRIVACY_SCAN_LIMIT) {
+    findings.push({
+      path: `（另有 ${all.length - PRIVACY_SCAN_LIMIT} 个文件未扫描）`,
+      reasons: [CANDIDATE_CAP_REASON],
+    });
   }
   return findings;
 }

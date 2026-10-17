@@ -20,6 +20,7 @@ const checks = [
   'checkpoint-and-recovery.test.mjs',
   'guards-local-git.test.mjs',
   'guards-malformed-calls.test.mjs',
+  'guards-malformed-parity.test.mjs',
   'guards-concurrent-write.test.mjs',
   'guards-hygiene.test.mjs',
   'digest-configuration.test.mjs',

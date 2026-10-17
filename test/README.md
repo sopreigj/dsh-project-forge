@@ -21,6 +21,7 @@ prints `<plugin name>: all plugin checks passed` and exits 1 on the first failur
 | `checkpoint-and-recovery.test.mjs` | the checkpoint guard and the post-compaction recovery message |
 | `guards-local-git.test.mjs` | the local-only git guard, its one-shot grants, the guard switches |
 | `guards-malformed-calls.test.mjs` | malformed tool-call repair (empty id) and its switch |
+| `guards-malformed-parity.test.mjs` | the review bundle's private copy of that repair agrees with this one, chunk for chunk |
 | `guards-concurrent-write.test.mjs` | per-file claims and the in-flight view other sessions read |
 | `guards-hygiene.test.mjs` | layout, secrets and the public surface, enforced at the commit |
 | `digest-configuration.test.mjs` | document budgets, whole-document inlining, the negative-knowledge index |
@@ -31,3 +32,6 @@ prints `<plugin name>: all plugin checks passed` and exits 1 on the first failur
 `harness.mjs` writes the fixture repository (plan/todo/done, `tortuous.jsonl`, steward rules, one
 commit) and exports the helpers the checks use. A check that needs a name declared by an earlier
 file imports it from that file, so the dependency between slices is explicit.
+
+A slice file cannot be run on its own (`node test/guards-hygiene.test.mjs`), because the shared
+names live in the runner. Run the whole project — it is one process on purpose.

@@ -70,7 +70,7 @@ dsh-project-forge/
 ## 开发
 
 ```sh
-node plugin/index.test.mjs plugin/index.js   # 自测：配置、digest、守卫、patch↔schema 漂移
+node test/run.mjs plugin/index.js   # 自测：配置、digest、守卫、patch↔schema 漂移
 node release/check-consistency.mjs           # 配置参考表 ↔ schema；技能两份副本是否一致
 node release/check-preset-sync.mjs --source <dsh-checkout>   # 本仓 preset 行 ↔ 内置 standard
 node release/check-public-surface.mjs        # 把模式自己的隐私守卫用在本仓上

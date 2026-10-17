@@ -12,7 +12,7 @@
 2. 跑单测：
 
    ```powershell
-   node plugin/index.test.mjs plugin/index.js
+   node test/run.mjs plugin/index.js
    ```
 
 3. 重启 DSH。提示词进的是系统提示，**改动重启后才生效**。
@@ -47,7 +47,7 @@ if (config.guardTabs !== false && ctx.tools !== undefined) {
 
 1. 写上面的块（`ctx.effect(() => …, 'project-forge.<名字>Guard()')`，这个标记会出现在报错里）。
 2. 加开关 `guardTabs`——**那就是一个新配置字段**，按下一节的四步同步。
-3. 在 `plugin/index.test.mjs` 里补两段断言：
+3. 在 `test/run.mjs` 里补两段断言：
    - **拒绝对照**：该拒的输入必须返回字符串；
    - **不得误伤**：正常输入必须放行（守卫误伤比漏放更常见，每一条既有守卫都有这组反例）。
 
@@ -70,14 +70,14 @@ AssertionError [ERR_ASSERTION]: the local-git guard is registered
 1. **`plugin/config/schema.js`**：字段 + 默认值 + JSDoc。`DEFAULTS` 是**文档默认值的唯一来源**，`docs/configuration.md` 拿它比对。
 2. **`cordis.patch.yml`**：只有当你要在 preset 里用**非默认值**时才写。行配置只写非默认项，多写一行就是噪音。
 3. **`docs/configuration.md`** 的表格：一行，默认值写成 **JSON 字面量**。
-4. **`plugin/index.test.mjs`**：默认值断言（字段改名时，patch↔schema 守卫也会在这里拦你）。
+4. **`test/run.mjs`**：默认值断言（字段改名时，patch↔schema 守卫也会在这里拦你）。
 
 跑这三条：
 
 ```powershell
 node release/check-consistency.mjs   # 配置表 ↔ schema 逐字段；技能副本一致；公开面无退役用词
 node release/check-preset-sync.mjs --source <dsh-checkout>   # 本仓 patch 行集合 ↔ 内置 standard
-node plugin/index.test.mjs plugin/index.js
+node test/run.mjs plugin/index.js
 ```
 
 **失败的形状**：把字段加进 `schema.js` 却忘了改 `docs/configuration.md`，第一条会指名道姓——下面是实测原文：
@@ -95,7 +95,7 @@ consistency: 1 处不一致
 四门检查跑一遍（发布脚本本身就是干这个的）：
 
 ```powershell
-node plugin/index.test.mjs plugin/index.js
+node test/run.mjs plugin/index.js
 node release/check-consistency.mjs
 node release/check-preset-sync.mjs --source <dsh-checkout>
 node release/check-public-surface.mjs

@@ -2,7 +2,8 @@
 #
 # 工作方式：
 #   1. 先跑五项检查，任一不过就拒绝发布——它们各自对应一类"静默腐烂"：
-#        · plugin/index.test.mjs     自测：配置解析、digest、全部守卫、patch↔schema 漂移
+#        · test/run.mjs              自测：配置解析、digest、全部守卫、patch↔schema 漂移
+#          （切片检查在 test/ 下，runner 按原顺序逐个 import；传的第二个参数是要加载的插件入口）
 #        · check-consistency.mjs     文档与代码：配置参考表 ↔ schema；两份技能副本逐字节相同
 #        · check-preset-sync.mjs     组合与上游：本仓 patch 的行集合 ↔ 内置 standard（无源码树时自跳过）
 #        · check-public-surface.mjs  公开面：用本模式自己的隐私守卫检查它自己的仓库
@@ -40,7 +41,7 @@ function Invoke-Check([string]$Label, [string]$Script, [string[]]$Arguments) {
   if ($LASTEXITCODE -ne 0) { throw "$Label 未通过（exit=$LASTEXITCODE），拒绝发布" }
 }
 
-Invoke-Check '自测（配置 / digest / 守卫 / patch↔schema）' "$dev\plugin\index.test.mjs" @("$dev\plugin\index.js")
+Invoke-Check '自测（配置 / digest / 守卫 / patch↔schema）' "$dev\test\run.mjs" @("$dev\plugin\index.js")
 Invoke-Check '一致性（配置参考表 ↔ schema；技能副本）' "$dev\release\check-consistency.mjs" @()
 $presetArgs = if ($DshSource) { @('--source', $DshSource) } else { @() }
 Invoke-Check '预设同步（本仓 patch ↔ 内置 standard）' "$dev\release\check-preset-sync.mjs" $presetArgs

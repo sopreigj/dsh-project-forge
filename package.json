@@ -11,7 +11,7 @@
     "./skills/*": "./skills/*"
   },
   "files": ["cordis.patch.yml", "plugin", "skills", "locale", "icon.svg", "README.md", "README.zh.md", "docs", "LICENSE"],
-  "scripts": { "test": "node plugin/index.test.mjs plugin/index.js" },
+  "scripts": { "test": "node test/run.mjs plugin/index.js" },
   "keywords": ["dsh-plugin", "deepseek-harness", "agent-preset", "project-stewardship"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }

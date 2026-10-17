@@ -92,7 +92,7 @@ in the published bundle.
 ## Development
 
 ```sh
-node plugin/index.test.mjs plugin/index.js   # self-test: config, digest, guards, patch↔schema drift
+node test/run.mjs plugin/index.js   # self-test: config, digest, guards, patch↔schema drift
 node release/check-consistency.mjs           # docs/configuration.md ↔ schema; the two skill copies
 node release/check-preset-sync.mjs --source <dsh-checkout>   # preset rows vs the shipped `standard`
 node release/check-public-surface.mjs        # the mode's privacy guard, applied to this repo
